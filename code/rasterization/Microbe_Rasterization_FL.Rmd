@@ -1,0 +1,288 @@
+---
+title: "Microbe_Rasterization_FL"
+author: "Haydt"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Libraries}
+library(raster)
+library(ggplot2)
+library(terra)
+```
+
+```{r Data prep for maps}
+#### HPC Finished code
+# blit_data <- read.csv(file = "data/blit_data_agg_Oo.csv")[,11:37]
+# flit_data <- read.csv(file = "EnvExtracts/extracts_flit_Oo_naomit_otu_bin.csv")[,11:40]
+
+load("bact_lit_OUT_IC.Rdata")
+load("fung_lit_OUT_IC.Rdata")
+
+grid_FL<- read.csv("Grids/FL_grid_fourth_random.csv")
+
+EpredY_blit <- read.csv("mean_bact_preds_fourth_FL.csv") #250thous cells
+EpredY_flit <- read.csv("mean_fung_preds_fourth_FL.csv") #250thous cells
+
+# EpredY_flit <- read.csv("mean_fung_preds2_15000_Mar24.csv")
+EpredY_flit <- as.matrix(EpredY_flit)
+# EpredY_blit <- read.csv("mean_bact_preds2_15000_Mar24.csv")
+EpredY_blit <- as.matrix(EpredY_blit)
+
+# includes all the information we need to visualize the predictions as maps
+# Prob <- EpredY[,2]
+S_blit <- rowSums(EpredY_blit)
+S_flit <- rowSums(EpredY_flit)
+
+xy.grid = as.matrix(cbind(grid_FL$x,grid_FL$y))
+XData.grid = grid_FL[ ,c(3:length(grid_FL))] # changed name of column to soil_water from residual_water to match training data
+
+# CWM <- (EpredY_blit%*%full_blit_mod$Tr)/matrix(rep(S,full_blit_mod$nt),
+#                                                ncol=full_blit_mod$nt)
+# full_blit_mod$TrData
+xy <- grid_FL[,1:2]
+# LT <- XData.grid$latitude
+RW <- XData.grid$soil_water
+ET <- XData.grid$et
+PR <- XData.grid$precip
+MT <- XData.grid$max_temp
+VG <- XData.grid$veg_class
+HM <- XData.grid$human_mod
+PH <- XData.grid$soil_pH
+
+mapData_blit <- data.frame(xy,RW,ET,PR,MT,VG,HM,
+                      PH,S_blit,EpredY_blit, 
+                      stringsAsFactors=TRUE)
+mapData_flit <- data.frame(xy,RW,ET,PR,MT,VG,HM,
+                      PH,S_flit,EpredY_flit, 
+                      stringsAsFactors=TRUE)
+```
+
+```{r Map Fungi Predictions}
+# List of microbe names
+fungi <- colnames(mapData_flit[,12:ncol(mapData_flit)])
+
+# List to store ggplot objects
+plots <- list()
+
+# Loop through each fungal name
+
+for (name in fungi) {
+  # Dynamically create ggplot for each fungal name
+  plot <- ggplot(data = mapData_flit, aes(x=x, y=y, color=!!rlang::sym(name))) +
+    geom_point(size=1.2) + 
+    scale_color_gradient(low="wheat", high="saddlebrown") +
+    coord_equal() +
+    theme_void() +
+    theme(legend.title = element_blank(),
+          legend.text = element_text(size = 10),
+          plot.margin = margin(1,1,1.5,1.2, "cm"),
+          plot.title = element_text(hjust = 0.5, size = 20))
+  
+  # Append the plot to the list of plots
+  plots[[name]] <- plot
+}
+
+# Arrange plots in a grid
+# grid.arrange(grobs = plots, ncol = 3)  # Adjust ncol as per your preference
+
+
+# Save each plot to a file with desired dimensions
+for (name in names(plots)) {
+  ggsave(paste(name, "250th_IcFL", ".png", sep = ""), plots[[name]], width = 10, height = 8, units = "in", dpi = 300)
+}
+
+# We next plot predicted species richness
+
+richness.plot <- ggplot(data = mapData_flit, aes(x=x, y=y, color=S_flit)) +
+  geom_point(size=1.2) +
+    ggtitle("Richness") + 
+  scale_color_gradient(low="wheat", high="saddlebrown") + 
+  coord_equal() +
+  theme_void() +
+  theme(legend.text = element_text(size = 10),
+        legend.title = element_blank(),
+        plot.margin = margin(1,1,1.5,1.2, "cm"),
+        plot.title = element_text(hjust = 0.5, size = 15))
+
+ggsave(richness.plot, file = "fung_richness_250th_IcFL.jpeg", dpi = 600, width = 6 , height = 7)
+```
+
+```{r Map Bacteria Predictions}
+# List of microbe names
+bacteria <- colnames(mapData_blit[,12:ncol(mapData_blit)])
+
+# List to store ggplot objects
+plots <- list()
+
+# Loop through each fungal name
+for (i in bacteria) {
+  # Dynamically create ggplot for each fungal name
+  plot <- ggplot(data = mapData_blit, aes(x=x, y=y, color=!!rlang::sym(i))) +
+    geom_point(size=1.2) + 
+    scale_color_gradient(low="wheat", high="saddlebrown") +
+    coord_equal() +
+    theme_void() +
+    theme(legend.title = element_blank(),
+          legend.text = element_text(size = 10),
+          plot.margin = margin(1,1,1.5,1.2, "cm"),
+          plot.title = element_text(hjust = 0.5, size = 20))
+  
+  # Append the plot to the list of plots
+  plots[[i]] <- plot
+}
+
+# Arrange plots in a grid
+# grid.arrange(grobs = plots, ncol = 3)  # Adjust ncol as per your preference
+
+
+# Save each plot to a file with desired dimensions
+for (i in names(plots)) {
+  ggsave(paste(i, "250th_IcFL", ".png", sep = ""), plots[[i]], width = 10, height = 8, units = "in", dpi = 300)
+}
+
+# We next plot predicted species richness
+
+richness.plot <- ggplot(data = mapData_blit, aes(x=x, y=y, color=S_blit)) +
+  geom_point(size=1.2) +
+    ggtitle("Richness") + 
+  scale_color_gradient(low="wheat", high="saddlebrown") + 
+  coord_equal() +
+  theme_void() +
+  theme(legend.text = element_text(size = 10),
+        legend.title = element_blank(),
+        plot.margin = margin(1,1,1.5,1.2, "cm"),
+        plot.title = element_text(hjust = 0.5, size = 15))
+
+ggsave(richness.plot, file = "bact_richness_250th_IcFL.jpeg", dpi = 600, width = 6 , height = 7)
+```
+
+```{r FUNGI RASTERIZATION}
+## For fungi
+
+# Convert mapData to spatial points
+coordinates(mapData_flit) <- c("x", "y")
+
+preds <- rast("Predictors/preds_Feb24.tif")
+preds <- stack(preds)
+
+FL <- "Predictors/FL_shapefile_wetlands/Florida.shp"
+FL <- terra::vect(FL)
+FL <- project(FL, crs(preds))
+FL <- rast(FL)
+FL <- raster(FL)
+
+# Crop to TX
+predictors_FL <- crop(x = preds, y = FL)
+predictors_FL <- stack(predictors_FL)
+
+# Create raster layer based on the extent of predictors
+flit_rasterized <- rasterize(mapData_flit, predictors_FL,
+                             field = mapData_flit$S_flit)
+# flit_ras <- crop(flit_rasterized, preds)
+# flit_ras <- mask(flit_rasterized, preds[[1]])
+# # Plot the cropped raster
+# plot(flit_ras)
+writeRaster(flit_rasterized, 
+            filename = "data/flit_richness_250thous_FL.tif",
+            overwrite = TRUE)
+
+####
+
+flit_rich_ras <- raster("data/flit_richness_250thous_TX.tif")
+# Replace 'your_variable' with the actual variable you are interpolating
+ras_data <- flit_rich_ras$flit_richness_250thous_TX
+
+# Define the resolution for interpolation
+# resolution <- 1000  # 1km resolution
+
+# Aggregate values across cells so no NA values
+agg_ras <- aggregate(flit_rich_ras, 2, fun=max)
+# ## inverse distance weighted (IDW)
+
+# Set resolution of raster to 1km x 1km so it will work with other environmental rasters
+disagg <- disaggregate(agg_ras, 15)
+res(disagg)
+plot(disagg)
+
+writeRaster(disagg, filename = "data/flit_rich_15agg_250thous_US.tif")
+
+# Convert mapData to spatial points
+# coordinates(mapData_flit) <- c("x", "y")
+
+## Loop through fungi that are >70% predictable
+plots <- list()
+
+for (fung in fungi) {
+  # Create raster layer based on the extent of predictors
+fungi_rasterized <- rasterize(mapData_flit, predictors_FL,
+                              field = fung)
+# flit_ras <- crop(flit_rasterized, preds)
+# flit_ras <- mask(flit_rasterized, preds[[1]])
+flit_agg_ras <- aggregate(fungi_rasterized, 5, fun=max)
+flit_disagg <- disaggregate(flit_agg_ras, 5)
+
+# Append the plot to the list of plots
+plots[[fung]] <- flit_disagg
+
+# Write US raster to file
+  # Write raster to file
+  writeRaster(flit_disagg, filename = 
+                paste0("Data/", fung, "_pred_5agg_250thous_FL.tif"), overwrite = TRUE)
+}
+
+## For bacteria
+# Convert mapData to spatial points
+coordinates(mapData_blit) <- c("x", "y")
+
+# Create raster layer based on the extent of predictors
+blit_rasterized <- rasterize(mapData_blit, predictors_TX, field = mapData_blit$S_blit)
+blit_ras <- crop(blit_rasterized, preds)
+blit_ras <- mask(blit_rasterized, preds[[1]])
+# # Plot the cropped raster
+# plot(flit_ras)
+writeRaster(blit_ras, 
+            filename = "data/blit_rich_15agg_250thous_US.tif",
+            overwrite = TRUE)
+
+####
+
+blit_rich_ras <- raster("data/blit_rich_15agg_250thous_US.tif")
+# Load your raster with NA values (assuming it's named 'raster_layer')
+# Replace 'your_variable' with the actual variable you are interpolating
+ras_data <- blit_rich_ras$blit_rich_15agg_250thous_US
+
+# Aggregate values across cells so no NA values
+agg_ras <- aggregate(blit_rich_ras, 15, fun=max)
+# ## inverse distance weighted (IDW)
+disagg <- disaggregate(agg_ras, 15)
+res(disagg)
+plot(disagg)
+
+writeRaster(disagg, filename = "data/blit_rich_15agg_250thous_US.tif")
+blit_rich_raster <- raster("predictions/blit_rich_15agg_250thous_US.tif")
+
+# Loop through bacteria that are >70% predictable and make prediction raster for each
+bact_plots <- list()
+
+for (bact in bacteria) {
+  # Create raster layer based on the extent of predictors
+bact_rasterized <- rasterize(mapData_blit, predictors_FL, field = bact)
+# blit_ras <- crop(blit_rasterized, preds)
+# blit_ras <- mask(blit_rasterized, preds[[1]])
+blit_agg_ras <- aggregate(bact_rasterized, 5, fun=max)
+blit_disagg <- disaggregate(blit_agg_ras, 5)
+
+# Append the plot to the list of plots
+bact_plots[[bact]] <- blit_disagg
+
+# Write US raster to file
+  # Write raster to file
+  writeRaster(blit_disagg, filename = 
+                paste0("Data/", bact, "_pred_5agg_250thous_FL.tif"))
+}
+```

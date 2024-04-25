@@ -1,0 +1,1058 @@
+---
+title: "SS_File"
+author: "Josh Poland"
+date: "2024-03-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+library(dplyr)
+library(data.table)
+library(parallel)
+library(doParallel)
+```
+
+```{r}
+# Left bring in previously merged/edited silva OTU and taxonomy data
+otu_joined <- read.csv("data/EMP/EMP_otu_tax.csv")
+otu_tax <-otu_joined[ , c(1:8)]
+rownames(otu_joined) <- otu_joined$OTU
+rownames(otu_tax) <- otu_tax$OTU
+emp_meta <- read.csv("data/EMP/emp_soil_samples_less.csv")
+```
+
+Import bacteria abundance/count data from the Earth Microbiome Project
+"emp_cr_silva_16S_123.release1.txt" filtered to samples with sample IDs
+from the US and Canada and with at least 1000 contig "observations" via greengenes. Using sample info from "emp_qiime_mapping_release1_20170912.tsv"
+**NEWER DATA CAN SWITCH OUT!! - NH 11Feb24
+```{r}
+# Left bring in previously merged/edited silva OTU and taxonomy data
+# otu_joined <- read.csv("data/EMP/EMP_otu_tax.csv")
+# otu_tax <-otu_joined[ , c(1:8)]
+# ```
+# 
+# Filter to top 58 abundant bacteria (with total OTU counts >= 250,000)
+# ```{r}
+# otu_counts <- otu_joined[ ,-c(1:8)]
+# otu_top58 <- otu_counts %>%
+#              mutate(sum_of_rows = rowSums(.)) %>%
+#              dplyr::select(sum_of_rows, everything()) %>%
+#              arrange(desc(sum_of_rows)) %>%
+#              filter(sum_of_rows > 249999) 
+# # 13,145 OTUs above or equal to 1000 count sum
+# # 5,656 above or equal to 5000
+# # 3,361 above or equal to 10,000
+# # 2,400 above or equal to 15,000
+# # 894 above or equal to 40,000
+# # 287 above or equal to 100,000
+# # 148 above or equal to 150,000
+# # 82 " " 200,000
+# # 58 " " 250,000 !!!!
+# 
+# # Now join count data back to the taxa info
+# otu_top <- otu_top58 %>%
+#               merge(otu_tax, by = 'row.names')
+# 
+# rm(otu_joined)
+```
+```{r}
+
+```
+
+To Do:
+
+
+Filter to bacteria associated to target species/disease
+```{r}
+# Read csv file with taxon from lit to be associated with SFD
+Lit_Tax <- read.csv('cg_rhizosphere_genus.csv', header=T, 
+                   comment.char = "#")
+
+# Filter to only Bacterium
+bac <- Lit_Tax %>%
+  dplyr::filter(form == "Bacterium")
+        
+
+# Create list of matching bacteria b/w EMP and Literature
+otu_ass <- otu_joined %>% 
+   filter(Genus %in% bac[,1])
+
+unique(otu_ass$Genus) #X matching bacteria
+
+# write.csv(emp_inLit, "lit_emp_otu_tax.csv", row.names = FALSE)
+```
+
+Import fungal abundance/count data from the Global Soil Mycobiome Consortium (Tedersoo et al. 2021).The GSMc dataset includes 722,682 OTUs from 3200 sampling plots in 108 countries.
+Each sampling plot has associated geographical and soil characteristic metadata.
+
+Read in the GSMc Observation file (previously edited in "GSMc_DataPrep.Rmd"), OTU tax info file, and sampling plot metadata
+```{r}
+meta_gsmc <-  read.csv("data/GSMC/GSMc_sample_meta.csv", header = TRUE)
+
+# Read OTU File
+otu_gsmc <- fread(file = "data/GSMC/GSMc_OTU_Table.txt.crdownload") #large file so used fread instead of read.table
+
+# Bring in taxonomic information for OTU
+gsmc_tax <- read.csv(file = "data/GSMC/GSMc_tax.csv")
+```
+
+To Do:
+Filter to top 50 abundant fungi
+```{r}
+# numCores <- detectCores()
+# cl <- makeCluster(numCores)
+# # start_time <- Sys.time()
+# beginCluster()
+# gsmc_sums <- otu_gsmc %>%
+#              filter(rowSums(.) > 249999)
+#              
+# endCluster()
+# # end_time <- Sys.time()
+# # end_time - start_time
+# 
+# 
+# chunk_size <- 250 # Adjust the chunk size based on your available memory
+# num_chunks <- ceiling(nrow(otu_gsmc) / chunk_size)
+# 
+# ## Make otu the row name
+# rownames(otu_gsmc) <- otu_gsmc$OTU
+# 
+# ## Take out the OTU number -- because making not numeric
+# otu_gsmc <- otu_gsmc %>%
+#               dplyr::select(-OTU)
+# gsmc_sums <- bind_rows(lapply(1:num_chunks, function(i) {
+#   start_row <- (i - 1) * chunk_size + 1
+#   end_row <- min(i * chunk_size, nrow(otu_gsmc))
+#   otu_gsmc[start_row:end_row, ] %>%
+#     dplyr::filter(rowSums(.) > 49999)
+# }))
+# 
+# numCores <- detectCores()
+# cl <- makeCluster(numCores)
+# registerDoParallel(cl)
+# 
+# # Export necessary libraries and functions to the workers
+# clusterExport(cl, c("otu_gsmc", "chunk_size", "rowSums", "dplyr"))
+# 
+# gsmc_sums <- foreach(i = 1:num_chunks, .combine = rbind) %dopar% {
+#   start_row <- (i - 1) * chunk_size + 1
+#   end_row <- min(i * chunk_size, nrow(otu_gsmc))
+#   otu_gsmc[start_row:end_row, ] %>%
+#     filter(rowSums(.) > 249999)
+# }
+# 
+# stopCluster(cl)
+# 
+# 
+# 
+# 
+# 
+# 
+# 
+#              dplyr::select(sum_of_rows, everything()) %>%
+#              arrange(desc(sum_of_rows)) %>%
+#              filter(sum_of_rows > 249999) 
+```
+
+To Do:
+Filter to fungi associated to target species/disease
+```{r}
+preds <- rast("Predictors/preds_Feb24.tif")
+
+library(raster)
+
+set.seed(123)
+
+raster_file<-preds
+r<-raster(raster_file)
+```
+
+
+```{r}
+tax<-"cg_rhizosphere_genus."
+
+Lit_Tax <- read.csv('cg_rhizosphere_genus.csv', header=T, 
+                    comment.char = "#")
+```
+
+
+
+```{r}
+# Filter to only fungi
+fun <- Lit_Tax %>%
+  dplyr::filter(form == "Fungal")
+
+```
+
+```{r}
+# Filter to only bacteria
+bac <- Lit_Tax %>%
+  dplyr::filter(form == "Bacterium")
+```
+
+```{r}
+# Create list of matching fungi b/w EMP and Literature
+otu_ass_f <- gsmc_tax %>% 
+  filter(genus %in% fun[,1]) %>%
+  dplyr::select(-c(kingdom,phylum, class, order, family,species)) #ONLY GENUS?
+#Select only OTU and genus
+
+# Merge count data to OTUs
+# Merge genus back in from the tax file
+lit_tax_otus <- otu_ass_f %>%
+                      left_join(otu_gsmc, by = "OTU") %>%
+                      group_by(genus) %>%
+                      summarize(across(-c(1:2), sum, na.rm = TRUE))
+```
+
+
+#HMSC FUNGAL MODEL (NOt Real)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, message=FALSE, warning=FALSE, load libraries}
+## install.packages("pacman")
+library(pacman)
+pacman::p_load(Hmsc, tidyverse, corrplot, raster, spThin,
+               terra, mapdata, sf, ggplot2, sp, parallel) 
+
+library(Hmsc)
+library(tidyverse)
+library(corrplot)
+library(raster)
+library(spThin)
+library(terra)
+library(mapdata)
+# library(rgdal)
+library(sf)
+library(ggplot2)
+# library(gdalUtils)
+library(sp)
+library(parallel)
+```
+
+```{r, Set up for testing or running full models}
+nChains = 4
+test.run = FALSE
+if (test.run){
+   #with this option, the vignette runs fast but results are not reliable 
+   thin = 1
+   samples = 10
+   transient = 5
+   verbose = 5
+} else {
+   #with this option, the vignette evaluates slow but it reproduces the results of the 
+   #.pdf version
+   thin = 3
+   samples = 1000
+   transient = 500*thin
+   verbose = 500*thin
+}
+```
+
+
+```{r}
+
+#Select only OTU and genus
+
+# Merge count data to OTUs
+# Merge genus back in from the tax file
+lit_tax_otus <- otu_ass_f %>%
+                      left_join(otu_joined, by = "OTU") %>%
+    dplyr::select(-c(Phylum, Class, Order, Family,
+                   Domain, Species))
+
+      names(lit_tax_otus)[2] <-  "Genus"   
+      lit_tax_otus <-  lit_tax_otus[,-3]   
+      
+    
+  # Merge genus back in from the tax file
+lit_tax_otus <- lit_tax_otus %>%                              
+                      group_by(Genus) %>%
+                      summarize(across(-c(1:2), sum, na.rm = TRUE))
+```
+
+
+```{r}
+write.csv(lit_tax_otus, "data/cogon_lit_emp_fun_2024.csv", row.names = FALSE)
+```
+
+
+
+
+
+# Building The BACTERIUM MODEL
+
+```{r}
+# Filter to only Bacterium
+bac <- Lit_Tax %>%
+  dplyr::filter(form == "Bacterium")
+```
+
+
+
+```{r}
+# Create list of matching bacterium b/w EMP and Literature
+otu_ass_b <- otu_tax %>% 
+  filter(Genus %in% bac[,1]) %>%
+  dplyr::select(-c(Phylum, Class, Order, Family,
+                   Domain, Species))
+```
+
+```{r}
+lit_tax_otus_b <- otu_ass_b %>%
+                      left_join(otu_joined, by = "OTU") %>%
+                      group_by(Genus.x) %>%
+  dplyr::select(-c(Phylum, Class, Order, Family,
+                   Domain, Species)) %>%
+                      summarize(across(-c(1:2), sum, na.rm = TRUE))
+```
+
+
+
+
+```{r}
+write.csv(lit_tax_otus_b, "data/cogon_lit_emp_bac_2024.csv", row.names = FALSE)
+```
+
+```{r}
+write.csv(lit_tax_otus_b, "data/cogon_lit_emp_bac_2024.csv", row.names = FALSE)
+```
+
+
+#Bacteria HMSC 
+
+
+```{r, import environmental rasters and microbe data}
+# Load predictor raster stack
+# Bring in here
+preds <- rast("Predictors/preds_Feb24.tif")
+# Bacteria and Fungi filtered to use in models
+bact_lit <- read.csv("data/cogn_lit_emp_bac_2024_transposed.csv")
+fung_lit <- read.csv("data/cogon_lit_emp_fun_2024_transposed.csv")
+
+```
+
+
+
+#MODEL
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE, load libraries}
+## install.packages("pacman")
+library(pacman)
+pacman::p_load(Hmsc, tidyverse, corrplot, raster, spThin,
+               terra, mapdata, sf, ggplot2, sp, parallel) 
+
+library(Hmsc)
+library(tidyverse)
+library(corrplot)
+library(raster)
+library(spThin)
+library(terra)
+library(mapdata)
+# library(rgdal)
+library(sf)
+library(ggplot2)
+# library(gdalUtils)
+library(sp)
+library(parallel)
+```
+
+```{r, Set up for testing or running full models}
+nChains = 4
+test.run = FALSE
+if (test.run){
+   #with this option, the vignette runs fast but results are not reliable 
+   thin = 1
+   samples = 10
+   transient = 5
+   verbose = 5
+} else {
+   #with this option, the vignette evaluates slow but it reproduces the results of the 
+   #.pdf version
+   thin = 3
+   samples = 1000
+   transient = 500*thin
+   verbose = 500*thin
+}
+```
+
+```{r, import environmental rasters and microbe data}
+# Load predictor raster stack
+# Bring in here
+preds <- rast("Predictors/preds_Feb24.tif")
+# Bacteria and Fungi filtered to use in models
+bact_lit <- read.csv("data/cogn_lit_emp_bac_2024_transposed.csv")
+fung_lit <- read.csv("data/cogon_lit_emp_fun_2024_transposed.csv")
+```
+
+```{r, Extract raster data at sampling locations}
+# Merge coordinates from samples back to otu tables
+emp_meta <- read.csv("data/EMP/emp_soil_samples_less.csv")
+emp_coords <- data.frame(x = emp_meta$longitude_deg, y = emp_meta$latitude_deg, Sample = emp_meta$Sample)
+bact_lit_coords <- left_join(bact_lit, emp_coords, by = "Sample")
+
+gsmc_meta <- read.csv("data/GSMC/GSMc_sample_meta.csv")
+## Merge fungal coords
+gsmc_coords <- data.frame(x = gsmc_meta$x, y = gsmc_meta$y, 
+                          Sample = gsmc_meta$Sample)
+fung_lit_coords <- left_join(fung_lit, gsmc_coords, by = "Sample")
+
+
+# Create a data frame of coordinates
+points_blit <- bact_lit_coords %>%
+  dplyr::select(x, y)
+points_flit <- fung_lit_coords %>%
+  dplyr::select(x, y)
+
+
+
+# Look at structure
+str(points_blit)
+
+# Transform into a spatial points dataframe
+clean_points_blit <- na.omit(points_blit)
+
+clean_points_flit <- na.omit(points_flit)
+
+
+wc.sp.blit <- SpatialPoints(na.omit(as.data.frame(clean_points_blit)),
+                            proj4string = CRS("+init=epsg:4326"))
+
+wc.sp.flit <- SpatialPoints(na.omit(as.data.frame(clean_points_flit)),
+                            proj4string = CRS("+init=epsg:4326"))
+
+
+# Extract coordinates from Spatial Points object
+coords_blit <- coordinates(wc.sp.blit)
+
+coords_flit <- coordinates(wc.sp.flit)
+
+# Extract raster values at the points
+extracts_blit <- extract(preds, coords_blit)
+
+extracts_flit <- extract(preds, coords_flit)
+
+
+# rename the columns
+colnames(extracts_blit) <- c("precip", "max_temp", "min_temp",
+                           "et", "veg_class", "soil_pH",
+                           "soil_water", "human_mod")
+
+                         
+colnames(extracts_flit) <- c("precip", "max_temp", "min_temp",
+                           "et", "veg_class", "soil_pH",
+                           "soil_water", "human_mod")
+extracts_blit=na.omit(extracts_blit)
+
+#combine extraction values and coordinates
+sp.coords_blit <- wc.sp.blit@coords
+
+sp.coords_flit <- wc.sp.flit@coords
+
+
+merge_extract.coord_blit <- as.data.frame(cbind(sp.coords_blit, extracts_blit))
+merge_extract.coord_flit <- as.data.frame(cbind(sp.coords_flit, extracts_flit))
+extracts_blit=na.omit(merge_extract.coord_blit)
+
+# Save extracts
+write.csv(extracts_blit,"extracts_blit_IC.csv")
+write.csv(merge_extract.coord_btop, "extracts_btop.csv")
+write.csv(merge_extract.coord_flit, "extracts_flit_Oo.csv")
+write.csv(merge_extract.coord_ftop, "extracts_ftop.csv")
+
+# Remove NAs
+extracts_blit.coords <- na.omit(merge_extract.coord_blit)
+extracts_btop.coords <- na.omit(merge_extract.coord_btop)
+extracts_flit.coords <- na.omit(merge_extract.coord_flit)
+extracts_ftop.coords <- na.omit(merge_extract.coord_ftop)
+
+# Remove duplicates for bacteria
+extracts_blit.coords2 <- extracts_blit %>%
+                            unique() ## Only 223 unique!!
+extracts_btop.coords2 <- extracts_btop.coords %>%
+                            unique() ## Only 223 unique!!
+# Add otu counts back in
+otu_extract_flit <- extracts_flit.coords %>%
+                      left_join(fung_lit_coords, by = c("x", "y"))
+otu_extract_ftop <- extracts_ftop.coords %>%
+                      left_join(fung_top_coords, by = c("x", "y"))
+otu_extract_blit <- extracts_blit.coords2 %>%
+                      left_join(bact_lit_coords, by = c("x", "y"))
+otu_extract_btop <- extracts_btop.coords2 %>%
+                      left_join(bact_top_coords, by = c("x", "y"))
+
+## Need to remove duplicate coords form bacteria data after merging back otus
+## Average per Xm?
+
+# Save edited extracts
+write.csv(otu_extract_blit, "extracts_blit_IC_naomit_otu.csv")
+write.csv(otu_extract_flit, "extracts_flit_IC_naomit_otu.csv")
+```
+
+Format data for Presence/Absence (P/A) Models
+```{r, echo = FALSE, results = FALSE}
+# Changing to Presence/Absence for logistic regression and discriminant analysis
+otu_extract_btop_bin <- otu_extract_btop %>%
+  mutate_at(vars(12:ncol(otu_extract_btop)), ~ ifelse(. > 0, 1, 0))
+otu_extract_blit_bin <- otu_extract_blit %>%
+  mutate_at(vars(12:ncol(otu_extract_blit)), ~ ifelse(. > 0, 1, 0))
+otu_extract_ftop_bin <- otu_extract_ftop %>%
+  mutate_at(vars(12:ncol(otu_extract_ftop)), ~ ifelse(. > 0, 1, 0))
+otu_extract_flit_bin <- otu_extract_flit %>%
+  mutate_at(vars(12:ncol(otu_extract_flit)), ~ ifelse(. > 0, 1, 0))
+# Save binary counts and extracts
+write.csv(otu_extract_blit_bin, "extracts_blit_IC_naomit_otu_bin.csv")
+write.csv(otu_extract_btop_bin, "extracts_btop_naomit_otu_bin.csv")
+write.csv(otu_extract_flit_bin, "extracts_flit_IC_naomit_otu_bin.csv")
+write.csv(otu_extract_ftop_bin, "extracts_ftop_naomit_otu_bin.csv")
+```
+
+
+```{r}
+# Summarize/aggregate duplicate coords in the bacteria dataframes
+btop_data_agg <- otu_extract_btop_bin %>%
+                  dplyr::select(-Sample) %>%
+                  group_by(across(1:11)) %>%
+                  summarize(across(12:last_col(), sum), .groups = "drop")
+
+btop_data_agg <- btop_data_agg %>%
+  mutate_at(vars(12:ncol(btop_data_agg)), ~ ifelse(. > 0, 1, 0))
+
+blit_data_1 <- otu_extract_blit_bin %>%
+                  dplyr::select(-Sample)
+
+blit_data_agg <- blit_data_1 %>%
+                  group_by(across(1:10)) %>%
+                  summarize(across(1:10, first), across(1:12, sum), .groups = "drop")
+
+
+
+blit_data_agg <- blit_data_agg %>%
+  mutate_at(vars(11:ncol(blit_data_agg)), ~ ifelse(. > 0, 1, 0))
+
+group_by(c(blit_data_1$x,blit_data_1$y, blit_data_1$precip, blit_data_1$max_temp, blit_data_1$min_temp, blit_data_1$et, blit_data_1$veg_class, blit_data_1$soil_pH, blit_data_1$soil_water, blit_data_1$human_mod))
+
+write.csv(blit_data_agg, "blit_data_agg_IC.csv")
+
+```
+
+
+
+Full model with Presence/Absence
+```{r}
+# data_blit <- otu_extract_blit_bin[,12:ncol(otu_extract_blit_bin)] %>%
+#   as.matrix()
+# data_btop <- otu_extract_btop_bin[,12:ncol(otu_extract_btop_bin)] %>%
+#   as.matrix() #### REMOVE DUPLICATES (AUGMENT/SUMMARIZE FOR EACH SITE)
+
+data_flit <- otu_extract_flit_bin[,12:ncol(otu_extract_flit_bin)] %>%
+  as.matrix()
+data_ftop <- otu_extract_ftop_bin[,12:ncol(otu_extract_ftop_bin)] %>%
+  as.matrix()
+
+data_blit <- blit_data_agg[,11:ncol(blit_data_agg)] %>%
+  as.matrix()
+
+
+XData_blit <-blit_data_agg %>%
+        dplyr::select(et, precip, max_temp, min_temp,
+               veg_class, human_mod, soil_water,
+               soil_pH)
+
+XData_flit <-otu_extract_flit_bin %>%
+        dplyr::select(et, precip, max_temp, min_temp,
+               veg_class, human_mod, soil_water,
+               soil_pH)
+
+
+
+Yblit <- blit_data_agg[,11:ncol(blit_data_agg)] %>%
+  as.matrix()
+
+Yftop <- otu_extract_ftop_bin[,12:ncol(otu_extract_ftop_bin)] %>%
+  as.matrix()
+
+Yflit <- otu_extract_flit_bin[,12:ncol(otu_extract_flit_bin)] %>%
+  as.matrix()
+
+# Set up model objects
+
+rownames(Yblit) <- 1:nrow(Yblit)
+
+rownames(Yflit) <- 1:nrow(Yflit)
+
+  
+
+studyDesign_blit <- data.frame(sample = as.factor(1:223))
+
+studyDesign_flit <- data.frame(sample = as.factor(1:94))
+
+
+xycoords_blit <- dplyr::select(blit_data_agg, c(x, y))
+
+xycoords_flit <- dplyr::select(otu_extract_flit_bin, c(x, y))
+
+
+rows_blit <- rownames(xycoords_blit)
+
+rows_flit <- rownames(xycoords_flit)
+
+
+rL_blit = HmscRandomLevel(units = studyDesign_blit$sample)
+
+rL_flit = HmscRandomLevel(units = studyDesign_flit$sample)
+
+
+# Set up the model
+full_flit <- Hmsc(Y = Yflit, 
+             XData = XData_flit, 
+             XFormula = ~ et + precip + 
+               max_temp + veg_class + human_mod + soil_water +
+               soil_pH,
+         distr = "probit",
+         studyDesign = studyDesign_flit,
+         ranLevels = list("sample" = rL_flit))
+
+full_blit <- Hmsc(Y = Yblit, 
+             XData = XData_blit, 
+             XFormula = ~ et + precip + 
+               max_temp + veg_class + human_mod + soil_water +
+               soil_pH,
+         distr = "probit",
+         studyDesign = studyDesign_blit,
+         ranLevels = list("sample" = rL_blit))
+
+
+# Run the model
+
+
+# Run the lit bacteria model
+start_time <- Sys.time()
+full_blit_mod <- sampleMcmc(full_blit, thin = thin, 
+                   samples = samples, transient = transient,
+                    nChains = nChains, nParallel = nChains , verbose = 1)
+end_time <- Sys.time()
+end_time - start_time # 17secs mins
+
+# Run the lit fungi model
+start_time <- Sys.time()
+full_flit_mod <- sampleMcmc(full_flit, thin = thin, 
+                   samples = samples, transient = transient,
+                    nChains = nChains, nParallel = nChains , verbose = 1)
+end_time <- Sys.time()
+end_time - start_time # 59 secs mins
+
+# #Save model object and coda object
+# save(mpost_blit, file = "bact_lit_IC.Rdata")
+# save(full_blit, file = "bact_lit_out_IC.Rdata")
+# save(mpost_flit, file = "fung2_lit.Rdata")
+# save(full_flit, file = "fung2_lit_out.Rdata")
+```
+
+```{r}
+# Convert to coda object
+mpost_blit <- convertToCodaObject(full_blit_mod)
+mpost_flit <- convertToCodaObject(full_flit_mod)
+# Evaluation on training data
+mpost <- c(mpost_blit, mpost_flit)[1]
+uni_sum <- summary(mpost$Beta)
+effectiveSize(mpost$Beta)
+gelman.diag(mpost$Beta, multivariate=FALSE)$psrf
+uni_preds <- computePredictedValues(full_blit_mod)
+evaluateModelFit(hM=full_blit_mod, predY=uni_preds)
+
+#$RMSE ()
+```
+#FUNGAL MODEL
+
+```{r}
+# Filter to only Fungal
+fun <- Lit_Tax %>%
+  dplyr::filter(form == "Fungal")
+```
+
+
+
+```{r}
+# Create list of matching fungi b/w EMP and Literature
+otu_ass_f <- otu_tax %>% 
+  filter(Genus %in% fun[,1]) %>%
+  dplyr::select(-c(Phylum, Class, Order, Family,
+                   Domain, Species))
+```
+
+```{r}
+lit_tax_otus_f <- otu_ass_f %>%
+                      left_join(otu_joined, by = "OTU") %>%
+                      group_by(Genus.x) %>%
+  dplyr::select(-c(Phylum, Class, Order, Family,
+                   Domain, Species)) %>%
+                      summarize(across(-c(1:2), sum, na.rm = TRUE))
+```
+
+
+
+
+```{r}
+write.csv(lit_tax_otus_f, "data/cogon_lit_emp_fun_2024.csv", row.names = FALSE)
+```
+
+
+
+# Fungi HMSC 
+
+
+```{r, import environmental rasters and microbe data}
+# Load predictor raster stack
+# Bring in here
+preds <- rast("Predictors/preds_Feb24.tif")
+# Bacteria and Fungi filtered to use in models
+bact_lit <- read.csv("data/cogn_lit_emp_bac_2024_transposed.csv")
+fun_lit <- read.csv("data/cogon_lit_emp_fun_2024_transposed.csv")
+
+```
+
+
+
+#MODEL
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE, load libraries}
+## install.packages("pacman")
+library(pacman)
+pacman::p_load(Hmsc, tidyverse, corrplot, raster, spThin,
+               terra, mapdata, sf, ggplot2, sp, parallel) 
+
+library(Hmsc)
+library(tidyverse)
+library(corrplot)
+library(raster)
+library(spThin)
+library(terra)
+library(mapdata)
+# library(rgdal)
+library(sf)
+library(ggplot2)
+# library(gdalUtils)
+library(sp)
+library(parallel)
+```
+
+```{r, Set up for testing or running full models}
+nChains = 4
+test.run = FALSE
+if (test.run){
+   #with this option, the vignette runs fast but results are not reliable 
+   thin = 1
+   samples = 10
+   transient = 5
+   verbose = 5
+} else {
+   #with this option, the vignette evaluates slow but it reproduces the results of the 
+   #.pdf version
+   thin = 3
+   samples = 1000
+   transient = 500*thin
+   verbose = 500*thin
+}
+```
+
+```{r, import environmental rasters and microbe data}
+# Load predictor raster stack
+# Bring in here
+preds <- rast("Predictors/preds_Feb24.tif")
+# Bacteria and Fungi filtered to use in models
+bact_lit <- read.csv("data/cogn_lit_emp_bac_2024_transposed.csv")
+fun_lit <- read.csv("data/cogon_lit_emp_fun_2024_transposed.csv")
+```
+
+```{r, Extract raster data at sampling locations}
+# Merge coordinates from samples back to otu tables
+emp_meta <- read.csv("data/EMP/emp_soil_samples_less.csv")
+emp_coords <- data.frame(x = emp_meta$longitude_deg, y = emp_meta$latitude_deg, Sample = emp_meta$Sample)
+fun_lit_coords <- left_join(fun_lit, emp_coords, by = "Sample")
+
+gsmc_meta <- read.csv("data/GSMC/GSMc_sample_meta.csv")
+## Merge fungal coords
+gsmc_coords <- data.frame(x = gsmc_meta$x, y = gsmc_meta$y, 
+                          Sample = gsmc_meta$Sample)
+fung_lit_coords <- left_join(fung_lit, gsmc_coords, by = "Sample")
+
+
+# Create a data frame of coordinates
+points_flit <- fun_lit_coords %>%
+  dplyr::select(x, y)
+points_flit <- fung_lit_coords %>%
+  dplyr::select(x, y)
+
+
+
+# Look at structure
+str(points_flit)
+
+# Transform into a spatial points dataframe
+
+
+clean_points_flit <- na.omit(points_flit)
+
+
+wc.sp.blit <- SpatialPoints(na.omit(as.data.frame(clean_points_blit)),
+                            proj4string = CRS("+init=epsg:4326"))
+
+wc.sp.flit <- SpatialPoints(na.omit(as.data.frame(clean_points_flit)),
+                            proj4string = CRS("+init=epsg:4326"))
+
+
+# Extract coordinates from Spatial Points object
+coords_blit <- coordinates(wc.sp.blit)
+
+coords_flit <- coordinates(wc.sp.flit)
+
+# Extract raster values at the points
+extracts_blit <- extract(preds, coords_blit)
+
+extracts_flit <- extract(preds, coords_flit)
+
+
+# rename the columns
+colnames(extracts_blit) <- c("precip", "max_temp", "min_temp",
+                           "et", "veg_class", "soil_pH",
+                           "soil_water", "human_mod")
+
+                         
+colnames(extracts_flit) <- c("precip", "max_temp", "min_temp",
+                           "et", "veg_class", "soil_pH",
+                           "soil_water", "human_mod")
+
+
+#combine extraction values and coordinates
+sp.coords_blit <- wc.sp.blit@coords
+
+sp.coords_flit <- wc.sp.flit@coords
+
+
+merge_extract.coord_blit <- as.data.frame(cbind(sp.coords_blit, extracts_blit))
+merge_extract.coord_flit <- as.data.frame(cbind(sp.coords_flit, extracts_flit))
+extracts_flit=na.omit(merge_extract.coord_flit)
+
+# Save extracts
+write.csv(extracts_blit,"extracts_blit_SS.csv")
+write.csv(merge_extract.coord_btop, "extracts_btop.csv")
+write.csv(merge_extract.coord_flit, "extracts_flit_Oo.csv")
+write.csv(merge_extract.coord_ftop, "extracts_ftop.csv")
+
+# Remove NAs
+extracts_blit.coords <- na.omit(merge_extract.coord_blit)
+extracts_btop.coords <- na.omit(merge_extract.coord_btop)
+extracts_flit.coords <- na.omit(merge_extract.coord_flit)
+extracts_ftop.coords <- na.omit(merge_extract.coord_ftop)
+
+# Remove duplicates for bacteria
+extracts_blit.coords2 <- extracts_blit %>%
+                            unique() ## Only 223 unique!!
+extracts_btop.coords2 <- extracts_btop.coords %>%
+                            unique() ## Only 223 unique!!
+extracts_flit.coords2 <- extracts_flit %>%
+                            unique()
+
+# Add otu counts back in
+otu_extract_flit <- extracts_flit.coords %>%
+                      left_join(fung_lit_coords, by = c("x", "y"))
+otu_extract_ftop <- extracts_ftop.coords %>%
+                      left_join(fung_top_coords, by = c("x", "y"))
+otu_extract_blit <- extracts_blit.coords2 %>%
+                      left_join(bact_lit_coords, by = c("x", "y"))
+otu_extract_btop <- extracts_btop.coords2 %>%
+                      left_join(bact_top_coords, by = c("x", "y"))
+
+## Need to remove duplicate coords form bacteria data after merging back otus
+## Average per Xm?
+
+# Save edited extracts
+write.csv(otu_extract_blit, "extracts_blit_IC_naomit_otu.csv")
+write.csv(otu_extract_flit, "extracts_flit_IC_naomit_otu.csv")
+```
+
+Format data for Presence/Absence (P/A) Models
+```{r, echo = FALSE, results = FALSE}
+# Changing to Presence/Absence for logistic regression and discriminant analysis
+otu_extract_btop_bin <- otu_extract_btop %>%
+  mutate_at(vars(12:ncol(otu_extract_btop)), ~ ifelse(. > 0, 1, 0))
+otu_extract_blit_bin <- otu_extract_blit %>%
+  mutate_at(vars(12:ncol(otu_extract_blit)), ~ ifelse(. > 0, 1, 0))
+otu_extract_ftop_bin <- otu_extract_ftop %>%
+  mutate_at(vars(12:ncol(otu_extract_ftop)), ~ ifelse(. > 0, 1, 0))
+otu_extract_flit_bin <- otu_extract_flit %>%
+  mutate_at(vars(12:ncol(otu_extract_flit)), ~ ifelse(. > 0, 1, 0))
+# Save binary counts and extracts
+write.csv(otu_extract_blit_bin, "extracts_blit_IC_naomit_otu_bin.csv")
+write.csv(otu_extract_btop_bin, "extracts_btop_naomit_otu_bin.csv")
+write.csv(otu_extract_flit_bin, "extracts_flit_IC_naomit_otu_bin.csv")
+write.csv(otu_extract_ftop_bin, "extracts_ftop_naomit_otu_bin.csv")
+```
+
+
+```{r}
+# Summarize/aggregate duplicate coords in the bacteria data frames
+ftop_data_agg <- otu_extract_ftop_bin %>%
+                  dplyr::select(-Sample) %>%
+                  group_by(across(1:11)) %>%
+                  summarize(across(12:last_col(), sum), .groups = "drop")
+
+btop_data_agg <- btop_data_agg %>%
+  mutate_at(vars(12:ncol(btop_data_agg)), ~ ifelse(. > 0, 1, 0))
+
+flit_data_1 <- otu_extract_flit_bin %>%
+                  dplyr::select(-Sample)
+
+flit_data_agg <- flit_data_1 %>%
+                  group_by(across(1:10)) %>%
+                  summarize(across(1:10, first), across(1:11, sum), .groups = "drop")
+
+
+
+flit_data_agg <- flit_data_agg %>%
+  mutate_at(vars(11:ncol(flit_data_agg)), ~ ifelse(. > 0, 1, 0))
+
+write.csv(blit_data_agg, "flit_data_agg_IC.csv")
+
+```
+
+
+
+Full model with Presence/Absence
+```{r}
+# data_blit <- otu_extract_blit_bin[,12:ncol(otu_extract_blit_bin)] %>%
+#   as.matrix()
+# data_btop <- otu_extract_btop_bin[,12:ncol(otu_extract_btop_bin)] %>%
+#   as.matrix() #### REMOVE DUPLICATES (AUGMENT/SUMMARIZE FOR EACH SITE)
+
+data_flit <- otu_extract_flit_bin[,11:ncol(otu_extract_flit_bin)] %>%
+  as.matrix()
+data_ftop <- otu_extract_ftop_bin[,12:ncol(otu_extract_ftop_bin)] %>%
+  as.matrix()
+
+data_blit <- blit_data_agg[,11:ncol(blit_data_agg)] %>%
+  as.matrix()
+
+
+XData_blit <-blit_data_agg %>%
+        dplyr::select(et, precip, max_temp, min_temp,
+               veg_class, human_mod, soil_water,
+               soil_pH)
+
+XData_flit <-otu_extract_flit_bin %>%
+        dplyr::select(et, precip, max_temp, min_temp,
+               veg_class, human_mod, soil_water,
+               soil_pH)
+
+
+
+Yblit <- blit_data_agg[,11:ncol(blit_data_agg)] %>%
+  as.matrix()
+
+Yftop <- otu_extract_ftop_bin[,12:ncol(otu_extract_ftop_bin)] %>%
+  as.matrix()
+
+Yflit <- otu_extract_flit_bin[,12:ncol(otu_extract_flit_bin)] %>%
+  as.matrix()
+
+# Set up model objects
+
+rownames(Yblit) <- 1:nrow(Yblit)
+
+rownames(Yflit) <- 1:nrow(Yflit)
+
+  
+
+studyDesign_blit <- data.frame(sample = as.factor(1:223))
+
+studyDesign_flit <- data.frame(sample = as.factor(1:94))
+
+
+xycoords_blit <- dplyr::select(blit_data_agg, c(x, y))
+
+xycoords_flit <- dplyr::select(otu_extract_flit_bin, c(x, y))
+
+
+rows_blit <- rownames(xycoords_blit)
+
+rows_flit <- rownames(xycoords_flit)
+
+
+rL_blit = HmscRandomLevel(units = studyDesign_blit$sample)
+
+rL_flit = HmscRandomLevel(units = studyDesign_flit$sample)
+
+
+# Set up the model
+full_flit <- Hmsc(Y = Yflit, 
+             XData = XData_flit, 
+             XFormula = ~ et + precip + 
+               max_temp + veg_class + human_mod + soil_water +
+               soil_pH,
+         distr = "probit",
+         studyDesign = studyDesign_flit,
+         ranLevels = list("sample" = rL_flit))
+
+full_blit <- Hmsc(Y = Yblit, 
+             XData = XData_blit, 
+             XFormula = ~ et + precip + 
+               max_temp + veg_class + human_mod + soil_water +
+               soil_pH,
+         distr = "probit",
+         studyDesign = studyDesign_blit,
+         ranLevels = list("sample" = rL_blit))
+
+
+# Run the model
+
+
+# Run the lit bacteria model
+start_time <- Sys.time()
+full_blit_mod <- sampleMcmc(full_blit, thin = thin, 
+                   samples = samples, transient = transient,
+                    nChains = nChains, nParallel = nChains , verbose = 1)
+end_time <- Sys.time()
+end_time - start_time # 17secs mins
+
+# Run the lit fungi model
+start_time <- Sys.time()
+full_flit_mod <- sampleMcmc(full_flit, thin = thin, 
+                   samples = samples, transient = transient,
+                    nChains = nChains, nParallel = nChains , verbose = 1)
+end_time <- Sys.time()
+end_time - start_time # 59 secs mins
+
+# #Save model object and coda object
+# save(mpost_blit, file = "bact_lit_IC_.Rdata")
+# save(full_blit, file = "bact_lit_out_IC_.Rdata")
+# save(mpost_flit, file = "fung2_lit_IC.Rdata")
+# save(full_flit, file = "fung2_lit_out_.Rdata")
+```
+
+```{r}
+# Convert to coda object
+mpost_blit <- convertToCodaObject(full_blit_mod)
+mpost_flit <- convertToCodaObject(full_flit_mod)
+# Evaluation on training data
+mpost <- c(mpost_blit, mpost_flit)[1]
+uni_sum <- summary(mpost$Beta)
+effectiveSize(mpost$Beta)
+gelman.diag(mpost$Beta, multivariate=FALSE)$psrf
+uni_preds <- computePredictedValues(full_blit_mod)
+evaluateModelFit(hM=full_blit_mod, predY=uni_preds)

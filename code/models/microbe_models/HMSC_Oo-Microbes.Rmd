@@ -1,0 +1,982 @@
+---
+title: "HMSC_Ophidiomycosis_Microbes"
+author: "Haydt"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Load Libraries, message=FALSE, warning=FALSE}
+## install.packages("pacman")
+library(pacman)
+pacman::p_load(Hmsc, tidyverse, corrplot, raster, spThin,
+               terra, mapdata, sf, ggplot2, sp, parallel,
+               lattice, gridExtra, gstat)
+```
+
+```{r Import environmental rasters and microbe data}
+# Load predictor raster stack
+# Bring in here
+preds <- rast("Predictors/preds_Feb24.tif")
+preds <- stack(preds)
+# Bacteria and Fungi filtered to use in models
+bact_lit <- read.csv("data/NRT_Microbes/lit_emp24_transposed.csv")
+fung_lit <- read.csv("data/NRT_Microbes/lit_emp_f_2024_transposed.csv")
+# bact_top <- read.csv("data/NRT_Microbes/top58_emp_transposed.csv")
+# fung_top <- read.csv("data/NRT_Microbes/top53_gsmc_transposed.csv")
+```
+
+```{r Extract environmental data at sampling locations}
+# Merge coordinates from samples back to otu tables
+emp_meta <- read.csv("data/EMP/emp_soil_samples_less.csv")
+emp_coords <- data.frame(x = emp_meta$longitude_deg, y = emp_meta$latitude_deg, Sample = emp_meta$Sample)
+bact_lit_coords <- left_join(bact_lit, emp_coords, by = "Sample")
+# bact_top_coords <- left_join(bact_top, emp_coords, by = "Sample")
+gsmc_meta <- read.csv("data/GSMC/GSMc_sample_meta.csv")
+## Merge fungal coords
+gsmc_coords <- data.frame(x = gsmc_meta$x, y = gsmc_meta$y, 
+                          Sample = gsmc_meta$Sample)
+fung_lit_coords <- left_join(fung_lit, gsmc_coords, by = "Sample")
+# fung_top_coords <- left_join(fung_top, gsmc_coords, by = "Sample")
+
+# Create a data frame of coordinates
+points_blit <- bact_lit_coords %>%
+  dplyr::select(x, y)
+points_flit <- fung_lit_coords %>%
+  dplyr::select(x, y)
+points_btop <- bact_top_coords %>%
+  dplyr::select(x, y)
+points_ftop <- fung_top_coords %>%
+  dplyr::select(x, y)
+
+# Look at structure
+str(points_blit)
+
+# Transform into a spatial points dataframe
+clean_points_blit <- na.omit(points_blit)
+clean_points_btop <- na.omit(points_btop)
+clean_points_flit <- na.omit(points_flit)
+clean_points_ftop <- na.omit(points_ftop)
+
+wc.sp.blit <- SpatialPoints(na.omit(as.data.frame(clean_points_blit)),
+                            proj4string = CRS("+init=epsg:4326"))
+wc.sp.btop <- SpatialPoints(na.omit(as.data.frame(clean_points_btop)),
+                            proj4string = CRS("+init=epsg:4326"))
+wc.sp.flit <- SpatialPoints(na.omit(as.data.frame(clean_points_flit)),
+                            proj4string = CRS("+init=epsg:4326"))
+wc.sp.ftop <- SpatialPoints(na.omit(as.data.frame(clean_points_ftop)),
+                            proj4string = CRS("+init=epsg:4326"))
+
+# Extract coordinates from SpatialPoints object
+coords_blit <- coordinates(wc.sp.blit)
+coords_btop <- coordinates(wc.sp.btop)
+coords_flit <- coordinates(wc.sp.flit)
+coords_ftop <- coordinates(wc.sp.ftop)
+# Extract raster values at the points
+extracts_blit <- extract(preds, coords_blit)
+extracts_btop <- extract(preds, coords_btop)
+extracts_flit <- extract(preds, coords_flit)
+extracts_ftop <- extract(preds, coords_ftop)
+
+# rename the columns
+colnames(extracts_blit) <- c("precip", "max_temp", "min_temp",
+                           "et", "veg_class", "soil_pH",
+                           "soil_water", "human_mod")
+colnames(extracts_btop) <- c("precip", "max_temp", "min_temp",
+                           "et", "veg_class", "soil_pH",
+                           "soil_water", "human_mod")
+colnames(extracts_flit) <- c("precip", "max_temp", "min_temp",
+                           "et", "veg_class", "soil_pH",
+                           "soil_water", "human_mod")
+colnames(extracts_ftop) <- c("precip", "max_temp", "min_temp",
+                           "et", "veg_class", "soil_pH",
+                           "soil_water", "human_mod")
+
+#combine extraction values and coordinates
+sp.coords_blit <- wc.sp.blit@coords
+sp.coords_btop <- wc.sp.btop@coords
+sp.coords_flit <- wc.sp.flit@coords
+sp.coords_ftop <- wc.sp.ftop@coords
+
+merge_extract.coord_blit <- as.data.frame(cbind(sp.coords_blit, extracts_blit))
+merge_extract.coord_btop <- as.data.frame(cbind(sp.coords_btop, extracts_btop))
+merge_extract.coord_flit <- as.data.frame(cbind(sp.coords_flit, extracts_flit))
+merge_extract.coord_ftop <- as.data.frame(cbind(sp.coords_ftop, extracts_ftop))
+
+# Save extracts
+write.csv(merge_extract.coord_blit, "extracts_blit_Oo.csv")
+write.csv(merge_extract.coord_btop, "extracts_btop.csv")
+write.csv(merge_extract.coord_flit, "extracts_flit_Oo.csv")
+write.csv(merge_extract.coord_ftop, "extracts_ftop.csv")
+
+# Remove NAs
+extracts_blit.coords <- na.omit(merge_extract.coord_blit)
+extracts_btop.coords <- na.omit(merge_extract.coord_btop)
+extracts_flit.coords <- na.omit(merge_extract.coord_flit)
+extracts_ftop.coords <- na.omit(merge_extract.coord_ftop)
+
+# Remove duplicates for bacteria
+extracts_blit.coords2 <- extracts_blit.coords %>%
+                            unique() ## Only 223 unique!!
+extracts_btop.coords2 <- extracts_btop.coords %>%
+                            unique() ## Only 223 unique!!
+# Add otu counts back in
+otu_extract_flit <- extracts_flit.coords %>%
+                      left_join(fung_lit_coords, by = c("x", "y"))
+otu_extract_ftop <- extracts_ftop.coords %>%
+                      left_join(fung_top_coords, by = c("x", "y"))
+otu_extract_blit <- extracts_blit.coords2 %>%
+                      left_join(bact_lit_coords, by = c("x", "y"))
+otu_extract_btop <- extracts_btop.coords2 %>%
+                      left_join(bact_top_coords, by = c("x", "y"))
+
+## Need to remove duplicate coords form bacteria data after merging back otus
+## Average per Xm?
+
+# Save edited extracts
+write.csv(otu_extract_blit, "extracts_blit_Oo_naomit_otu.csv")
+otu_extract_blit <- read.csv("extracts_blit_Oo_naomit_otu.csv")
+write.csv(otu_extract_btop, "extracts_btop_naomit_otu.csv")
+write.csv(otu_extract_flit, "extracts_flit_Oo_naomit_otu.csv")
+otu_extract_flit <- read.csv("extracts_flit_Oo_naomit_otu.csv")
+write.csv(otu_extract_ftop, "extracts_ftop_naomit_otu.csv")
+```
+
+```{r Data Prep for P/A models, echo = FALSE, results = FALSE}
+# Changing to Presence/Absence for logistic regression and discriminant analysis
+otu_extract_btop_bin <- otu_extract_btop %>%
+  mutate_at(vars(12:ncol(otu_extract_btop)), ~ ifelse(. > 0, 1, 0))
+otu_extract_blit_bin <- otu_extract_blit %>%
+  mutate_at(vars(12:ncol(otu_extract_blit)), ~ ifelse(. > 0, 1, 0))
+otu_extract_ftop_bin <- otu_extract_ftop %>%
+  mutate_at(vars(12:ncol(otu_extract_ftop)), ~ ifelse(. > 0, 1, 0))
+otu_extract_flit_bin <- otu_extract_flit %>%
+  mutate_at(vars(12:ncol(otu_extract_flit)), ~ ifelse(. > 0, 1, 0))
+
+# Summarize/aggregate duplicate coords in the bacteria dataframes
+
+blit_data_1 <- otu_extract_blit_bin %>%
+                  dplyr::select(-Sample)
+
+# blit_data_agg <- blit_data_1  %>%
+#                   group_by(across(2:11)) %>%
+#                   summarize(across(12:last_col(), sum), .groups = "drop")
+
+blit_data_agg <- blit_data_1  %>%
+                  group_by(across(1:10)) %>%
+                  summarize(across(1:last_col(), sum), .groups = "drop") # --- group_by is ridic.
+
+blit_data_agg <- blit_data_agg %>%
+  mutate_at(vars(11:ncol(blit_data_agg)), ~ ifelse(. > 0, 1, 0))
+write.csv(blit_data_agg, "blit_data_agg_Oo.csv")
+
+# # Save binary counts and extracts
+# write.csv(otu_extract_blit_bin, "extracts_blit_Oo_naomit_otu_bin.csv")
+# write.csv(otu_extract_btop_bin, "extracts_btop_naomit_otu_bin.csv")
+# write.csv(otu_extract_flit_bin, "extracts_flit_Oo_naomit_otu_bin.csv")
+# write.csv(otu_extract_ftop_bin, "extracts_ftop_naomit_otu_bin.csv")
+```
+
+```{r, NOT USING FOR NRT PROJECT, add snake species to environmental dataframe}
+# data$species <- as.factor(data$species) # to keep or not to keep for NRT project? NOT FOR NRT
+```
+
+```{r Set up for testing or running full models}
+nChains = 4
+test.run = FALSE
+if (test.run){
+   #with this option, the vignette runs fast but results are not reliable 
+   thin = 1
+   samples = 10
+   transient = 5
+   verbose = 5
+} else {
+   #with this option, the vignette evaluates slow but it reproduces the results of the 
+   #.pdf version
+   thin = 3
+   samples = 1000
+   transient = 500*thin
+   verbose = 500*thin
+}
+```
+
+```{r Set Up and Run Full Models}
+# data_blit <- otu_extract_blit_bin[,12:ncol(otu_extract_blit_bin)] %>%
+#   as.matrix()
+# data_btop <- otu_extract_btop_bin[,12:ncol(otu_extract_btop_bin)] %>%
+#   as.matrix() #### REMOVE DUPLICATES (AUGMENT/SUMMARIZE FOR EACH SITE)
+
+blit_data <- read.csv(file = "blit_data_agg_Oo.csv")
+flit_data <- read.csv(file = "extracts_flit_Oo_naomit_otu_bin.csv")
+
+# data_flit <- flit_data[,c(16,17,20,25,28,29,30,31,33,34,36,41)] %>%
+#   as.matrix()
+# AUC's above .70 for # 3,4,7,12,15,16,17,18,20,21,23,28
+# data_ftop <- otu_extract_ftop_bin[,12:ncol(otu_extract_ftop_bin)] %>%
+#   as.matrix()
+data_flit <- flit_data[,11:ncol(flit_data)] %>%
+  as.matrix()
+data_blit <- blit_data[,11:ncol(blit_data)] %>%
+  as.matrix()
+# data_btop <- btop_data_agg[,12:ncol(btop_data_agg)] %>%
+#   as.matrix()
+
+XData_blit <-blit_data %>%
+        dplyr::select(et, precip, max_temp, min_temp,
+               veg_class, human_mod, soil_water,
+               soil_pH)
+# XData_btop <-btop_data_agg %>%
+#         dplyr::select(et, precip, max_temp, min_temp,
+#                veg_class, human_mod, soil_water,
+#                soil_pH)
+XData_flit <-flit_data %>%
+        dplyr::select(et, precip, max_temp, min_temp,
+               veg_class, human_mod, soil_water,
+               soil_pH)
+# XData_ftop <-otu_extract_ftop_bin %>%
+#         dplyr::select(et, precip, max_temp, min_temp,
+#                veg_class, human_mod, soil_water,
+#                soil_pH)
+
+# Ybtop <- btop_data_agg[,12:ncol(btop_data_agg)] %>%
+#   as.matrix()
+Yblit <- blit_data[,11:ncol(blit_data)] %>%
+  as.matrix()
+# Yftop <- otu_extract_ftop_bin[,12:ncol(otu_extract_ftop_bin)] %>%
+#   as.matrix()
+Yflit <- flit_data[,11:ncol(flit_data)] %>%
+  as.matrix()
+
+# Set up model objects
+# rownames(Ybtop) <- 1:nrow(Ybtop)
+rownames(Yblit) <- 1:nrow(Yblit)
+# rownames(Yftop) <- 1:nrow(Yftop)
+rownames(Yflit) <- 1:nrow(Yflit)
+
+  
+# studyDesign_btop <- data.frame(sample = as.factor(1:291)) #number of plots/sampling locations
+studyDesign_blit <- data.frame(sample = as.factor(1:223))
+# studyDesign_ftop <- data.frame(sample = as.factor(1:94))
+studyDesign_flit <- data.frame(sample = as.factor(1:94))
+
+# xycoords_btop <- dplyr::select(btop_data_agg, c(x, y))
+xycoords_blit <- dplyr::select(blit_data, c(x, y))
+# xycoords_ftop <- dplyr::select(otu_extract_ftop_bin, c(x, y))
+xycoords_flit <- dplyr::select(flit_data, c(x, y))
+
+# rows_btop <- rownames(xycoords_btop)
+rows_blit <- rownames(xycoords_blit)
+# rows_ftop <- rownames(xycoords_ftop)
+rows_flit <- rownames(xycoords_flit)
+
+# rL_btop = HmscRandomLevel(units = studyDesign_btop$sample)
+rL_blit = HmscRandomLevel(units = studyDesign_blit$sample)
+# rL_ftop = HmscRandomLevel(units = studyDesign_ftop$sample)
+rL_flit = HmscRandomLevel(units = studyDesign_flit$sample)
+
+
+# Set up the model
+full_flit <- Hmsc(Y = Yflit, 
+             XData = XData_flit, 
+             XFormula = ~ et + precip + 
+               max_temp + veg_class + human_mod + soil_water +
+               soil_pH,
+         distr = "probit",
+         studyDesign = studyDesign_flit,
+         ranLevels = list("sample" = rL_flit))
+
+full_blit <- Hmsc(Y = Yblit, 
+             XData = XData_blit, 
+             XFormula = ~ et + precip + 
+               max_temp + veg_class + human_mod + soil_water +
+               soil_pH,
+         distr = "probit",
+         studyDesign = studyDesign_blit,
+         ranLevels = list("sample" = rL_blit))
+
+# Run the lit bacteria model
+start_time <- Sys.time()
+full_blit_mod <- sampleMcmc(full_blit, thin = thin, 
+                   samples = samples, transient = transient,
+                    nChains = nChains, nParallel = nChains , verbose = 1)
+end_time <- Sys.time()
+end_time - start_time # 17secs, 59 seconds with more bacteria
+
+# Run the lit fungi model
+start_time <- Sys.time()
+full_flit_mod <- sampleMcmc(full_flit, thin = thin, 
+                   samples = samples, transient = transient,
+                    nChains = nChains, nParallel = nChains , verbose = 1)
+end_time <- Sys.time()
+end_time - start_time # 17secs
+
+# #Save model object and coda object
+# save(full_blit_mod, file = "bact2_lit_out_19Ap24.Rdata")
+# save(full_flit_mod, file = "fung2_lit_out.Rdata_19Ap24")
+```
+
+```{r Bacterial Model Eval}
+# save(mpost_blit, file = "bact2_lit.Rdata")
+# save(mpost_flit, file = "fung2_lit.Rdata")
+load("bact_lit_OUT_IC.Rdata")
+# load("data/bact2_lit_out.Rdata")
+load("fung_lit_OUT_IC.Rdata")
+
+# Convert to coda object
+mpost_blit <- convertToCodaObject(full_blit_mod)
+mpost_flit <- convertToCodaObject(full_flit_mod)
+
+# load("data/bact2_lit_out.Rdata")
+# Evaluation on training data
+mpost <- c(mpost_blit, mpost_flit)[1]
+uni_sum <- summary(mpost_blit$Beta)
+effectiveSize(mpost_blit$Beta)
+gelman.diag(mpost_blit$Beta, multivariate=FALSE)$psrf
+uni_preds <- computePredictedValues(full_blit_mod)
+evaluateModelFit(hM=full_blit_mod, predY=uni_preds)
+# $RMSE
+#  [1] 3.82765430 0.23692378 0.24264821 0.06612203 0.14613470
+#  [6] 0.11766565 0.27347503 0.07562155 0.12784663 0.23680311
+# [11] 0.07581336 0.27197352 0.38418910 0.28985025 0.36103734
+# [16] 0.08960678 0.27772959
+# 
+# $AUC
+#  [1] 0.9740061 0.9578293 0.9798565 1.0000000 0.8669725
+#  [6] 0.9760274 0.9643902 0.9981685 0.9928612 0.9851833
+# [11] 0.9996582 0.9496833 0.8611019 0.9330836 0.8726415
+# [16] 0.9991424 0.9499746
+# 
+# $TjurR2
+#  [1] 0.59070672 0.45738039 0.65325504 0.75131609 0.03595229
+#  [6] 0.15846597 0.62666811 0.79923500 0.61574821 0.65211261
+# [11] 0.81620378 0.51440990 0.36428598 0.41330983 0.31622487
+# [16] 0.70867592 0.44863114
+
+# $RMSE
+#  [1] 0.34725834 0.43706624 0.33302871 0.36412721 0.03697323 0.32493964
+#  [7] 0.28415056 0.09760115 0.31982837 0.08235527 0.27598308 0.23914283
+# [13] 0.24785331 0.07251514 0.14604287 0.12003987 0.28875132 0.07802104
+# [19] 0.12964094 0.27292549 0.08679990 0.27350791 0.37971308 0.29481657
+# [25] 0.35663844 0.07919487 0.27191442
+# 
+# $AUC
+#  [1] 0.8857115 0.7914722 0.9272845 0.8803348 1.0000000 0.9194415 0.9537167
+#  [8] 0.9982847 0.9000992 0.9994808 0.9659585 0.9465726 0.9750736 1.0000000
+# [15] 0.8311927 0.9714612 0.9570732 0.9934066 0.9905768 0.9655704 0.9993165
+# [22] 0.9476894 0.8667441 0.9238452 0.8781447 0.9991424 0.9535297
+# 
+# $TjurR2
+#  [1] 0.37260907 0.21056803 0.50320324 0.34187849 0.87975899 0.48396928
+#  [7] 0.53390459 0.69389599 0.45882025 0.73199566 0.64831002 0.46737383
+# [13] 0.64698962 0.74931498 0.03033285 0.13290615 0.60527319 0.80045826
+# [19] 0.62505901 0.59743698 0.80490425 0.51178337 0.37569643 0.40857469
+# [25] 0.33090124 0.76544524 0.45941719
+
+# Evaluation on training data using Cross-Validation (3-Fold)
+partition = createPartition(full_blit_mod, nfolds = 3, column = "sample")
+preds = computePredictedValues(full_blit_mod, partition = partition, nParallel = nChains)
+MF = evaluateModelFit(hM = full_blit_mod, predY = preds)
+MF
+# $RMSE
+#  [1] 3.8866237 0.3527844 0.3808263 0.1962310 0.1599858
+#  [6] 0.1403412 0.4185803 0.2470127 0.2670067 0.4206157
+# [11] 0.2498266 0.3228672 0.4453417 0.3975894 0.4205949
+# [16] 0.2319272 0.3295134
+# 
+# $AUC
+#  [1] 0.8244809 0.6626344 0.8505335 0.3604651 0.5027523
+#  [6] 0.7363014 0.7999187 0.5366300 0.7858367 0.7776636
+# [11] 0.5724539 0.8891626 0.7487554 0.6616729 0.7484277
+# [16] 0.4656947 0.8778568
+# 1,3,6,7,9,10,12,13,15,17
+# $TjurR2
+#  [1]  0.332913450  0.052589061  0.339429955 -0.023022194
+#  [5] -0.016107801  0.038351983  0.329791446  0.001013414
+#  [9]  0.118783154  0.252701798  0.011110038  0.359614854
+# [13]  0.245382363  0.071516586  0.169650476 -0.022294292
+# [17]  0.335930657
+
+### 27 bact
+# $RMSE
+#  [1] 0.4246615 0.4770499 0.4358157 0.4545948 0.2239698 0.3723907 0.3943486
+#  [8] 0.2121068 0.3574908 0.2000138 0.3925011 0.3383244 0.3765617 0.1859505
+# [15] 0.1522063 0.1314316 0.4055919 0.2335156 0.2440329 0.4154676 0.2434476
+# [22] 0.3218079 0.4311639 0.3955211 0.4323595 0.2134298 0.3132205
+# 
+# $AUC
+#  [1] 0.7341785 0.6786806 0.7803116 0.6820272 0.7026066 0.8212496 0.7959327
+#  [8] 0.6826758 0.8172619 0.6266874 0.8560277 0.6607863 0.8524650 0.5831395
+# [15] 0.4596330 0.7865297 0.8268293 0.6952381 0.8306682 0.7866564 0.6196172
+# [22] 0.8947924 0.7772154 0.6636704 0.7235653 0.6728130 0.9015998
+# 
+# $TjurR2
+#  [1]  0.169616961  0.116086091  0.256791853  0.115612059  0.031495763
+#  [6]  0.375386613  0.241521845  0.053443138  0.346886394  0.007575649
+# [11]  0.397251511  0.101664250  0.354283403  0.019439580 -0.007146850
+# [16]  0.045710462  0.347701501  0.041491799  0.180071166  0.262219430
+# [21]  0.026317615  0.368260163  0.250628211  0.082536600  0.158498182
+# [26]  0.039101205  0.333391220
+```
+
+```{r Fungal Model Eval}
+# Evaluation on training data, fungal model
+mpost <- c(mpost_blit, mpost_flit)[2]
+uni_sum <- summary(mpost_flit$Beta)
+effectiveSize(mpost_flit$Beta)
+gelman.diag(mpost_flit$Beta, multivariate=FALSE)$psrf
+uni_preds <- computePredictedValues(full_flit_mod)
+evaluateModelFit(hM=full_flit_mod, predY=uni_preds)
+# $RMSE
+#  [1] 0.006550714 0.396812357 0.402808035 0.360730445 0.225133977 0.445425506
+#  [7] 0.285410774 0.220638032 0.461161902 0.167803458 0.006542633 0.382419001
+# [13] 0.450128800 0.181792718 0.195785644 0.312717536 0.370932514 0.295262924
+# [19] 0.276786329 0.243814290 0.168601764 0.005775047 0.243181509 0.317212272
+# [25] 0.436810950 0.007059631 0.006575286 0.266341524 0.006569446 0.262511104
+# 
+# $AUC
+#  [1]        NA 0.8528226 0.8423913 0.9076087 0.8352273 0.7907609 0.9277193
+#  [8] 0.7685393 0.6857143 0.9413919        NA 0.8598790 0.7246169 0.8277778
+# [15] 0.9777778 0.8493590 0.9094613 0.9312452 0.9095238 0.9353779 0.9472222
+# [22]        NA 0.8686371 0.7764228 0.7819444        NA        NA 0.8892857
+# [29]        NA 0.7587209
+# 
+# $TjurR2
+#  [1]        NaN 0.22523414 0.30044917 0.42854599 0.09347781 0.15946757
+#  [7] 0.45482153 0.02433725 0.06157366 0.05645469        NaN 0.27281239
+# [13] 0.11306783 0.13302848 0.43380145 0.24795661 0.34077226 0.32306763
+# [19] 0.12120140 0.33549116 0.20092216        NaN 0.11904216 0.08084388
+# [25] 0.18133917        NaN        NaN 0.20366609        NaN 0.08243459
+
+# Evaluation on training data using Cross-Validation (3-Fold)
+partition = createPartition(full_flit_mod, nfolds = 3, column = "sample")
+preds = computePredictedValues(full_flit_mod, partition = partition, nParallel = nChains)
+MF = evaluateModelFit(hM = full_flit_mod, predY = preds)
+MF
+# $RMSE
+#  [1] 0.01257913 0.44152228 0.43679973 0.38373961 0.24628184 0.50498799
+#  [7] 0.31537502 0.24113549 0.52170304 0.18174621 0.01160690 0.42942167
+# [13] 0.47485293 0.20055097 0.24761002 0.37486979 0.45447558 0.33202847
+# [19] 0.32183112 0.28756781 0.20925680 0.01265984 0.27296449 0.36452416
+# [25] 0.49699057 0.01195142 0.01149368 0.30743044 0.01172018 0.28747592
+# 
+# $AUC
+#  [1]        NA 0.7187500 0.7803442 0.8668478 0.5094697 0.5733696 0.8400000
+#  [8] 0.1662921 0.3815981 0.4835165        NA 0.7615927 0.6412835 0.7083333
+# [15] 0.9176471 0.5408654 0.7378904 0.8716578 0.4511905 0.8477547 0.6305556
+# [22]        NA 0.5747126 0.3739837 0.6046296        NA        NA 0.7178571
+# [29]        NA 0.4171512
+# 
+# $TjurR2
+#  [1]          NaN  0.130846211  0.241572010  0.395211363  0.016197770
+#  [6]  0.046174601  0.396869678 -0.045353377 -0.047572308 -0.012801664
+# [11]          NaN  0.171862861  0.068428886  0.064737554  0.234899850
+# [16]  0.112463520  0.180342013  0.239492539 -0.016433443  0.198565737
+# [21]  0.017135404          NaN -0.005704644 -0.049115794  0.065823865
+# [26]          NaN          NaN  0.081793690          NaN  0.001207316
+```
+
+```{r Beta plots, impact/significance of of environmental variables}
+m1 <- full_blit_mod
+m2 <- full_flit_mod
+postBeta = getPostEstimate(m1, parName = "Beta")
+par(mar=c(5,11,2.5,0))
+
+# Plot betas looking at support level
+plotBeta(m1,
+         post = postBeta, 
+         plotTree = F,
+         spNamesNumbers = c(F,F),
+         covNamesNumbers = c(T, F)
+         )
+# Plot betas looking at mean of posterior distribution
+plotBeta(m1, 
+         post = postBeta,
+         param = "Mean",
+         plotTree = F,  
+         spNamesNumbers = c(F,F),
+         covNamesNumbers = c(T,F))
+
+postBeta = getPostEstimate(m2, parName = "Beta")
+par(mar=c(5,11,2.5,0))
+
+# Plot betas looking at support level
+plotBeta(m2,
+         post = postBeta, 
+         plotTree = F,
+         spNamesNumbers = c(F,F),
+         covNamesNumbers = c(T, F)
+         )
+# Plot betas looking at mean of posterior distribution
+plotBeta(m2, 
+         post = postBeta,
+         param = "Mean",
+         plotTree = F,  
+         spNamesNumbers = c(F,F),
+         covNamesNumbers = c(T,F))
+
+# Variance paritioning, looking at env and study design impact on Oo
+VP1 = computeVariancePartitioning(m1)
+par(mar=c(4,4,4,4))
+## look at arguments using ?barplot
+plotVariancePartitioning(m1, VP = VP1,
+                          las = 2, horiz=F)
+
+# Plotting with x-axis label removed
+plotVariancePartitioning(m1, VP = VP1,
+                         las = 2, horiz = FALSE,
+                         legend.text = NULL)
+
+VP2 = computeVariancePartitioning(m2)
+par(mar=c(4,4,4,4))
+plotVariancePartitioning(m2, VP = VP2,
+                         las = 2, horiz=F)
+
+plotVariancePartitioning(m2, VP = VP2,
+                         las = 2, horiz = FALSE,
+                         legend.text = NULL)
+```
+
+```{r Environmental response plots}
+# Create gradient
+Gradient = constructGradient(m1,
+                             focalVariable = "human_mod")
+
+predY = predict(m1,
+                XData = Gradient$XDataNew, 
+                studyDesign = Gradient$studyDesignNew,
+                ranLevels = Gradient$rLNew,
+                expected = TRUE)
+
+### plot response
+plotGradient(m1,
+             Gradient,
+             pred=predY,
+             measure="S",
+             showData = TRUE)
+
+Gradient2 = constructGradient(m2,
+                             focalVariable = "human_mod")
+
+predY = predict(m2,
+                XData = Gradient2$XDataNew, 
+                studyDesign = Gradient2$studyDesignNew,
+                ranLevels = Gradient2$rLNew,
+                expected = TRUE)
+
+### plot response
+plotGradient(m2,
+             Gradient2,
+             pred=predY,
+             measure="S",
+             showData = TRUE)
+
+
+Gradient = constructGradient(m2,
+                          focalVariable = "soil_water")
+head(Gradient$XDataNew)
+
+predY = predict(m2,
+                XData = Gradient$XDataNew, 
+                studyDesign = Gradient$studyDesignNew,
+                ranLevels = Gradient$rLNew,
+                expected = TRUE)
+### response
+plotGradient(m2,
+             Gradient,
+             pred=predY,
+             measure="S",
+             showData = TRUE)
+
+Gradient = constructGradient(m1,
+                          focalVariable = "soil_water")
+
+predY = predict(m1,
+                XData = Gradient$XDataNew, 
+                studyDesign = Gradient$studyDesignNew,
+                ranLevels = Gradient$rLNew,
+                expected = TRUE)
+### response
+plotGradient(m1,
+             Gradient,
+             pred=predY,
+             measure="S",
+             showData = TRUE)
+```
+
+```{r Create Point Grid Across State for Predictions}
+# save(full_blit_mod, file = "bact2_lit_out.Rdata")
+# save(full_flit_mod, file = "fung2_lit_out.Rdata")
+load("Models/bact2_lit_out_19Ap24.Rdata")
+load("Models/fung2_lit_out_19Ap24.Rdata")
+
+# Load predictor raster stack
+preds <- rast("Predictors/preds_Feb24.tif")
+preds <- stack(preds) # env. rasters across all US
+
+# Crop all raster to AR and TX first!
+# Bring in AR raster to use as a mask to crop all predictor layers
+AR2 <- read_sf("Predictors/Arkansas_Shapefile/Arkansas.shp")
+AR <- read_sf("Predictors/AR_shapefile_wetlands/Arkansas.shp")
+
+AR <- "Predictors/AR_shapefile_wetlands/Arkansas.shp"
+AR <- terra::vect(AR)
+
+TX <- "Predictors/TX_shapefile_wetlands/Texas.shp"
+TX <- terra::vect(TX)
+
+FL <- "Predictors/FL_shapefile_wetlands/Florida.shp"
+FL <- terra::vect(FL)
+
+
+# # Transform the CRS
+# AR <- st_transform(AR, crs = 4326)
+# AR <- spTransform(AR, crs(preds))
+AR <- project(AR, crs(preds))
+AR <- rast(AR)
+AR <- raster(AR)
+
+TX <- project(TX, crs(preds))
+TX <- rast(TX)
+TX <- raster(TX)
+
+FL <- project(FL, crs(preds))
+FL <- rast(FL)
+FL <- raster(FL)
+
+## CROP PREDICTOR RASTER
+predictors_AR <- crop(x = preds, y = AR)
+predictors_AR <- stack(predictors_AR)
+
+predictors_TX <- crop(x = preds, y = TX)
+predictors_TX <- stack(predictors_TX)
+
+predictors_FL <- crop(x = preds, y = FL)
+predictors_FL <- stack(predictors_FL)
+
+## Make a grid of points to predict Oo occurrences in AR
+# Determine the number of cells in the raster
+n_cells <- ncell(predictors_TX)
+n_cells_US <- ncell(preds) # 14,392,200!!!!
+n_cells_FL <- ncell(predictors_FL)
+
+# Set the size of the sample, making sure it's less than or equal to the number of cells
+sample_size <- min(250000, n_cells)
+sample_size_US <- min(500000, n_cells_US)
+sample_size_FL <- n_cells_FL
+sample_size_FL2 <- min(n_cells_FL/4)
+
+# Sample random points from the raster
+grid <- sampleRandom(preds, size = 35000, cells = FALSE, xy = TRUE)
+
+colnames(grid) <- c("x", "y", "precip", "max_temp", "min_temp",
+                           "et", "veg_class", "soil_pH",
+                           "soil_water", "human_mod")
+
+write.csv(grid, "US_grid_250thous_random.csv")
+
+# Bring in grid points
+grid_US <- read.csv("Grids/US_grid_250thous_random.csv", stringsAsFactors=TRUE)
+grid_FL <- read.csv("Grids/FL_grid_fourth_random.csv", stringsAsFactors=TRUE)
+grid_TX<- read.csv("Grids/TX_grid_250thous_random.csv")
+```
+
+```{r Prediction in parallel, run on HPC, see other Rscript}
+# We are now ready to compute the posterior predictive distribution (takes a minute to compute it)
+nParallel <- 3
+start_time <- Sys.time()
+predY_blit <-  predict(full_blit_mod, Gradient=Gradient_blit,
+                expected = TRUE,
+                nParallel=nParallel,
+                predictEtaMean = TRUE)
+end_time <- Sys.time()
+end_time - start_time
+write.csv(predY_blit, "")
+
+start_time <- Sys.time()
+predY_flit <-  predict(full_flit_mod, Gradient=Gradient_flit,
+                  expected = TRUE,
+                nParallel=nParallel,
+                predictEtaMean = TRUE)
+end_time <- Sys.time()
+end_time - start_time
+
+# the posterior mean prediction.
+# Get matrix of posterior mean occurrence probabilities
+# gc()
+EpredY <- Reduce("+",predY_blit)/length(predY_blit) # Reduce to mean (previously list of 4000 because of all posterior sample iterations)
+dim(EpredY)
+pred.df.blit <- as.data.frame(EpredY)
+write.csv(pred.df.blit, file = "mean_bact_preds_1mil_US.csv")
+
+EpredY <- Reduce("+",predY_flit )/length(predY_flit ) # Reduce to mean (previously list of 4000 because of all posterior sample iterations)
+dim(EpredY)
+pred.df.flit <- as.data.frame(EpredY)
+write.csv(pred.df.flit, file = "mean_fung_preds_1mil_US.csv")
+```
+
+```{r Data prep for maps}
+#### HPC Finished code
+blit_data <- read.csv(file = "data/blit_data_agg_Oo.csv")[,11:37]
+flit_data <- read.csv(file = "EnvExtracts/extracts_flit_Oo_naomit_otu_bin.csv")[,11:40]
+
+EpredY_blit <- read.csv("Predictions/mean_bact_preds_250thous_US.csv")
+EpredY_flit <- read.csv("Predictions/mean_fung_preds_250thous_US.csv")
+
+# EpredY_flit <- read.csv("mean_fung_preds2_15000_Mar24.csv")
+EpredY_flit <- as.matrix(EpredY_flit)
+# EpredY_blit <- read.csv("mean_bact_preds2_15000_Mar24.csv")
+EpredY_blit <- as.matrix(EpredY_blit)
+
+# includes all the information we need to visualize the predictions as maps
+# Prob <- EpredY[,2]
+S_blit <- rowSums(EpredY_blit)
+S_flit <- rowSums(EpredY_flit)
+
+xy.grid = as.matrix(cbind(grid_US$x,grid_US$y))
+XData.grid = grid_US[ ,c(3:length(grid_US))] # changed name of column to soil_water from residual_water to match training data
+
+# CWM <- (EpredY_blit%*%full_blit_mod$Tr)/matrix(rep(S,full_blit_mod$nt),
+#                                                ncol=full_blit_mod$nt)
+# full_blit_mod$TrData
+xy <- grid_US[,1:2]
+# LT <- XData.grid$latitude
+RW <- XData.grid$soil_water
+ET <- XData.grid$et
+PR <- XData.grid$precip
+MT <- XData.grid$max_temp
+VG <- XData.grid$veg_class
+HM <- XData.grid$human_mod
+PH <- XData.grid$soil_pH
+
+mapData_blit <- data.frame(xy,RW,ET,PR,MT,VG,HM,
+                      PH,S_blit,EpredY_blit, 
+                      stringsAsFactors=TRUE)
+mapData_flit <- data.frame(xy,RW,ET,PR,MT,VG,HM,
+                      PH,S_flit,EpredY_flit, 
+                      stringsAsFactors=TRUE)
+```
+
+```{r Map Fungi Predictions}
+# List of microbe names
+fungi <- colnames(flit_data[,c(2,3,4,7,12,15,17,18,20)])
+
+# List to store ggplot objects
+plots <- list()
+
+# Loop through each fungal name
+
+for (name in fungi) {
+  # Dynamically create ggplot for each fungal name
+  plot <- ggplot(data = mapData_flit, aes(x=x, y=y, color=!!rlang::sym(name))) +
+    geom_point(size=1.2) + 
+    scale_color_gradient(low="wheat", high="saddlebrown") +
+    coord_equal() +
+    theme_void() +
+    theme(legend.title = element_blank(),
+          legend.text = element_text(size = 10),
+          plot.margin = margin(1,1,1.5,1.2, "cm"),
+          plot.title = element_text(hjust = 0.5, size = 20))
+  
+  # Append the plot to the list of plots
+  plots[[name]] <- plot
+}
+
+# Arrange plots in a grid
+grid.arrange(grobs = plots, ncol = 3)  # Adjust ncol as per your preference
+
+
+# Save each plot to a file with desired dimensions
+for (name in names(plots)) {
+  ggsave(paste(name, ".png", sep = ""), plots[[name]], width = 10, height = 8, units = "in", dpi = 300)
+}
+
+# We next plot predicted species richness
+
+richness.plot <- ggplot(data = mapData_flit, aes(x=x, y=y, color=S_flit)) +
+  geom_point(size=1.2) +
+    ggtitle("Richness") + 
+  scale_color_gradient(low="wheat", high="saddlebrown") + 
+  coord_equal() +
+  theme_void() +
+  theme(legend.text = element_text(size = 10),
+        legend.title = element_blank(),
+        plot.margin = margin(1,1,1.5,1.2, "cm"),
+        plot.title = element_text(hjust = 0.5, size = 15))
+
+ggsave(richness.plot, file = "fung_richness_250thouscells_US.jpeg", dpi = 600, width = 6 , height = 7)
+```
+
+```{r Map Bacteria Predictions}
+# List of microbe names
+bacteria <- colnames(blit_data[,c(1,3,5,6,7,9,11,13,17,19,20,22,23,25,27)])
+
+# List to store ggplot objects
+plots <- list()
+
+# Loop through each fungal name
+for (name in bacteria) {
+  # Dynamically create ggplot for each fungal name
+  plot <- ggplot(data = mapData_blit, aes(x=x, y=y, color=!!rlang::sym(name))) +
+    geom_point(size=1.2) + 
+    scale_color_gradient(low="wheat", high="saddlebrown") +
+    coord_equal() +
+    theme_void() +
+    theme(legend.title = element_blank(),
+          legend.text = element_text(size = 10),
+          plot.margin = margin(1,1,1.5,1.2, "cm"),
+          plot.title = element_text(hjust = 0.5, size = 20))
+  
+  # Append the plot to the list of plots
+  plots[[name]] <- plot
+}
+
+# Arrange plots in a grid
+grid.arrange(grobs = plots, ncol = 3)  # Adjust ncol as per your preference
+
+
+# Save each plot to a file with desired dimensions
+for (name in names(plots)) {
+  ggsave(paste(name, ".png", sep = ""), plots[[name]], width = 10, height = 8, units = "in", dpi = 300)
+}
+
+# We next plot predicted species richness
+
+richness.plot <- ggplot(data = mapData_blit, aes(x=x, y=y, color=S_blit)) +
+  geom_point(size=1.2) +
+    ggtitle("Richness") + 
+  scale_color_gradient(low="wheat", high="saddlebrown") + 
+  coord_equal() +
+  theme_void() +
+  theme(legend.text = element_text(size = 10),
+        legend.title = element_blank(),
+        plot.margin = margin(1,1,1.5,1.2, "cm"),
+        plot.title = element_text(hjust = 0.5, size = 15))
+
+ggsave(richness.plot, file = "bact_richness_250thouscells_US.jpeg", dpi = 600, width = 6 , height = 7)
+```
+
+```{r FUNGI RASTERIZATION}
+## For fungi
+# Convert mapData to spatial points
+coordinates(mapData_flit) <- c("x", "y")
+
+preds <- rast("Predictors/preds_Feb24.tif")
+preds <- stack(preds)
+
+# Create raster layer based on the extent of predictors
+flit_rasterized <- rasterize(mapData_flit, preds, field = mapData_flit$S_flit)
+flit_ras <- crop(flit_rasterized, preds)
+flit_ras <- mask(flit_rasterized, preds[[1]])
+# # Plot the cropped raster
+# plot(flit_ras)
+writeRaster(flit_ras, 
+            filename = "data/flit_richness_250thous_US.tif",
+            overwrite = TRUE)
+
+####
+
+flit_rich_ras <- raster("data/flit_richness_250thous_US.tif")
+# Load your raster with NA values (assuming it's named 'raster_layer')
+# Replace 'your_variable' with the actual variable you are interpolating
+ras_data <- flit_rich_ras$flit_richness_250thous_US
+
+# Define the resolution for interpolation
+# resolution <- 1000  # 1km resolution
+
+# Aggregate values across cells so no NA values
+agg_ras <- aggregate(flit_rich_ras, 15, fun=max)
+# ## inverse distance weighted (IDW)
+
+# Set resolution of raster to 1km x 1km so it will work with other environmental rasters
+disagg <- disaggregate(agg_ras, 15)
+res(disagg)
+plot(disagg)
+
+writeRaster(disagg, filename = "data/flit_rich_15agg_250thous_US.tif")
+
+# Convert mapData to spatial points
+# coordinates(mapData_flit) <- c("x", "y")
+
+## Loop through fungi that are >70% predictable
+plots <- list()
+
+for (fung in fungi) {
+  # Create raster layer based on the extent of predictors
+fungi_rasterized <- rasterize(mapData_flit, preds, field = fung)
+flit_ras <- crop(flit_rasterized, preds)
+flit_ras <- mask(flit_rasterized, preds[[1]])
+flit_agg_ras <- aggregate(flit_ras, 15, fun=max)
+flit_disagg <- disaggregate(flit_agg_ras, 15)
+
+# Append the plot to the list of plots
+plots[[fung]] <- flit_disagg
+
+# Write US raster to file
+  # Write raster to file
+  writeRaster(flit_disagg, filename = 
+                paste0("data/", fung, "_pred_15agg_250thous_US.tif"))
+}
+```
+
+```{r BACTERIA RASTERIZATION - working on}
+## For bacteria
+# Convert mapData to spatial points
+coordinates(mapData_blit) <- c("x", "y")
+
+preds <- rast("Predictors/preds_Feb24.tif")
+preds <- stack(preds)
+
+# Create raster layer based on the extent of predictors
+blit_rasterized <- rasterize(mapData_blit, preds, field = mapData_blit$S_blit)
+blit_ras <- crop(blit_rasterized, preds)
+blit_ras <- mask(blit_rasterized, preds[[1]])
+# # Plot the cropped raster
+# plot(flit_ras)
+writeRaster(blit_ras, 
+            filename = "data/blit_rich_15agg_250thous_US.tif",
+            overwrite = TRUE)
+
+####
+
+blit_rich_ras <- raster("data/blit_rich_15agg_250thous_US.tif")
+# Load your raster with NA values (assuming it's named 'raster_layer')
+# Replace 'your_variable' with the actual variable you are interpolating
+ras_data <- blit_rich_ras$blit_rich_15agg_250thous_US
+
+# Aggregate values across cells so no NA values
+agg_ras <- aggregate(blit_rich_ras, 15, fun=max)
+# ## inverse distance weighted (IDW)
+disagg <- disaggregate(agg_ras, 15)
+res(disagg)
+plot(disagg)
+
+writeRaster(disagg, filename = "data/blit_rich_15agg_250thous_US.tif")
+blit_rich_raster <- raster("predictions/blit_rich_15agg_250thous_US.tif")
+
+# Convert mapData to spatial points
+coordinates(mapData_blit) <- c("x", "y")
+
+# Loop through bacteria that are >70% predictable and make prediction raster for each
+
+plots <- list()
+
+for (bact in bacteria) {
+  # Create raster layer based on the extent of predictors
+bact_rasterized <- rasterize(mapData_blit, preds, field = bact)
+blit_ras <- crop(blit_rasterized, preds)
+blit_ras <- mask(blit_rasterized, preds[[1]])
+blit_agg_ras <- aggregate(blit_ras, 15, fun=max)
+blit_disagg <- disaggregate(blit_agg_ras, 15)
+
+# Append the plot to the list of plots
+plots[[bact]] <- blit_disagg
+
+# Write US raster to file
+  # Write raster to file
+  writeRaster(blit_disagg, filename = 
+                paste0("Data/", bact, "_pred_15agg_250thous_US.tif"))
+}
+```

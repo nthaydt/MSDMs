@@ -1,0 +1,682 @@
+---
+title: "HMSC_Oo"
+author: "Haydt"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE, load libraries}
+## install.packages("pacman")
+library(pacman)
+pacman::p_load(Hmsc, tidyverse, corrplot, raster, spThin,
+               terra, mapdata, sf, ggplot2, sp, parallel) 
+```
+
+```{r, Set up for testing or running full models}
+nChains = 4
+test.run = FALSE
+if (test.run){
+   #with this option, the vignette runs fast but results are not reliable 
+   thin = 1
+   samples = 10
+   transient = 5
+   verbose = 5
+} else {
+   #with this option, the vignette evaluates slow but it reproduces the results of the 
+   #.pdf version
+   thin = 3
+   samples = 1000
+   transient = 500*thin
+   verbose = 500*thin
+}
+```
+
+```{r, import environmental rasters}
+# Load predictor raster stack
+# Bring in here
+preds <- rast("Predictors/preds_Feb24.tif")
+preds <- stack(preds)
+TX <- "Predictors/TX_shapefile_wetlands/Texas.shp"
+TX <- terra::vect(TX)
+TX <- project(TX, crs(preds))
+TX <- rast(TX)
+TX <- raster(TX)
+predictors_TX <- crop(x = preds, y = TX)
+predictors_TX <- stack(predictors_TX)
+```
+
+Add in microbe rasters to the predictor stack
+```{r}
+wd <- getwd()
+
+mic_files<- list.files(path=paste0(wd, "/TX_Maps/tifs"),
+                          pattern=".tif", 
+                          full.names = T,
+                          recursive = T)
+# stack microbe raster files
+mic_ras <- stack(mic_files, quick = "T")
+
+# format  so can stack microbe and env. rasters together
+extent(mic_ras) <- extent(predictors_TX)
+crs(mic_ras) <- crs(predictors_TX)
+
+# Adjust the extent of flit_ras to match predictors_TX
+mic_ras_adjusted <- crop(mic_ras, extent(predictors_TX))
+nrow(mic_ras)
+nrow(predictors_TX)
+
+# Crop mic_ras_adjusted to match the extent of predictors_TX
+mic_ras_cropped <- crop(mic_ras_adjusted, extent(predictors_TX))
+
+# Resample each layer of the raster stack individually
+mic_ras_adjusted_resampled <- stack()
+for (i in 1:nlayers(mic_ras_cropped)) {
+  mic_ras_adjusted_resampled <- addLayer(
+    mic_ras_adjusted_resampled, 
+    resample(mic_ras_cropped[[i]], predictors_TX)
+  )
+}
+mic_ras <- mic_ras_adjusted_resampled
+mic_ras <- stack(mic_ras, predictors_TX)
+```
+
+```{r, Bring in disease occurrences and extracts}
+# data <- read.csv("data/DoD_data_thinned.csv") ### USE THIS!!
+# data <- read.csv("data/DoD_envExtracts.csv")
+# data <- na.omit(data)
+## Texas Oo occurrence data
+data <- read.csv("Data/TX_OoPA.csv")
+data <- na.omit(data)
+data_agg <- data %>%
+                  group_by(across(1:2)) %>%
+                  summarize(across(1:last_col(), sum), 
+                            .groups = "drop")
+
+data_agg <- data_agg %>%
+  mutate_at(vars(3), ~ ifelse(. > 0, 1, 0))
+write.csv(data_agg, "TX_PAdata_agg_Oo.csv")
+```
+
+```{r Data Prep, can skip if write data}
+TX_data <- read.csv("TX_PAdata_agg_Oo.csv")
+data <- data_agg
+# Create a data frame of coordinates
+points <- data %>%
+  dplyr::select(x, y)
+
+# Look at structure
+str(points)
+
+# Transform into a spatial points dataframe
+wc.sp <- SpatialPoints(na.omit(as.data.frame(points)),
+                     proj4string = CRS("+init=epsg:4326"))
+
+wc.sp <- spTransform(wc.sp, CRSobj = crs(preds))
+
+points <- coordinates(wc.sp)
+
+# Extract data at points from all layers at once
+extracts <- raster::extract(mic_ras, points)
+
+# rename the columns
+colnames(extracts) <- c("Acremonium", "Actinomycetospora", "Alkanindiges",
+                        "Alternaria", "Amanita", "Arthrobacter",
+                        "Cellulosimicrobium", "Cenococcum", "Cohnella",
+                        "Erwinia", "Glaciimonas", "Hyphodiscus",
+                        "Janthinobacterium", "Lasiodiplodia", "Lophiostoma",
+                        "Microdochium", "Neopestalotiopsis", "Nevskia",
+                        "Nocardioides", "Pandoraea", "Rudaea", "Serratia",
+                        "Stenotrophomonas", "Xylophilus", 
+                        "precip", "max_temp", "min_temp",
+                           "et", "veg_class", "soil_pH",
+                           "soil_water", "human_mod")
+
+#combine extraction values and coordinates
+sp.coords <- wc.sp@coords
+
+merge_extract.coord <- as.data.frame(cbind(sp.coords, extracts))
+
+# Save extracts
+write.csv(merge_extract.coord, "extracts_TX_OoPA.csv")
+
+# Remove NAs
+extracts_coords <- na.omit(merge_extract.coord)
+
+# Remove duplicates for bacteria
+extracts.coords2 <- extracts_coords %>%
+                            unique() ## Only 51 unique!!
+
+data <- read.csv("extracts_TX_OoPA.csv")
+extracts_coords <- left_join(data,
+                             TX_data)
+
+write.csv(extracts_coords, file = "TX_Oo_envExtracts.csv")
+data <- read.csv("TX_Oo_envExtracts.csv")
+
+data <- na.omit(data)
+write.csv(data, file = "TX_envExtracts_noNa.csv")
+```
+
+```{r, Prepare data for HMSC model Using PresAbs Data}
+# Formatting data
+n = 51  ## sampling units
+XData <- data %>%
+        dplyr::select(Acremonium, Actinomycetospora, Alkanindiges,
+            Alternaria, Amanita, Arthrobacter, 
+            Cellulosimicrobium, Cenococcum, Cohnella, 
+            Erwinia, Glaciimonas, Hyphodiscus,
+            Janthinobacterium, Lasiodiplodia, Lophiostoma, 
+            Microdochium, Neopestalotiopsis, Nevskia,
+            Nocardioides, Pandoraea, Rudaea, Serratia, Stenotrophomonas,
+            Xylophilus, precip, max_temp,
+                           et, veg_class, soil_pH,
+                           soil_water, human_mod)
+
+xycoords <- data.frame(data$x, data$y)
+xycoords <- round(xycoords, 2)
+
+Y = data.frame(x = data$prsabs)
+
+# Adding studyDesign
+studyDesign = data.frame(sample = as.factor(1:n))
+
+rL = HmscRandomLevel(units = studyDesign$sample)
+```
+
+```{r, Add snake species as trait data}
+# Tr = as.data.frame(data$species)
+# TrFormula = ~species
+```
+
+```{r, JK, add snake species to environmental dataframe}
+# data$species <- as.factor(data$species)
+# XData2 <- data %>%
+#         dplyr::select(et, precip, max_temp, min_temp,
+#                veg_class, human_mod, soil_water,
+#                soil_pH)
+```
+
+Make model using the env. data prediction raster stack 
+and species as trait data
+```{r, make model}
+# Set up the model, microbes AUC >= 0.70, R-squared >= 0.1
+Oo_mod_setup1.1 <- Hmsc(Y = Y, XData = XData, 
+          XFormula = ~ Acremonium + Actinomycetospora + Alkanindiges +
+            Alternaria + Amanita + Arthrobacter +
+            Cellulosimicrobium + Cenococcum + Cohnella +
+            Erwinia + Glaciimonas + Hyphodiscus +
+            Janthinobacterium + Lasiodiplodia + Lophiostoma + 
+            Microdochium + Neopestalotiopsis + Nevskia +
+            Nocardioides + Pandoraea + Rudaea + Serratia + Stenotrophomonas +
+            Xylophilus + et + precip + max_temp + veg_class + 
+            human_mod + soil_water + soil_pH,
+          distr = "probit", studyDesign = studyDesign,
+         ranLevels = list("sample" = rL))
+# Set up the model, microbes AUC >= 0.70, R-squared >= 0.2
+Oo_mod_setup1.2 <- Hmsc(Y = Y, XData = XData, 
+          XFormula = ~ Alkanindiges +
+            Alternaria + Amanita +
+            Cellulosimicrobium + Cenococcum + Cohnella +
+            Erwinia + Glaciimonas +
+            Janthinobacterium + Lasiodiplodia + 
+            Microdochium + Nevskia +
+            Pandoraea + Rudaea + Serratia +
+            Xylophilus + et + precip + max_temp + veg_class + 
+            human_mod + soil_water + soil_pH,
+          distr = "probit", studyDesign = studyDesign,
+         ranLevels = list("sample" = rL))
+
+# Set up the model, microbes AUC >= 0.70, R-squared >= 0.3
+Oo_mod_setup1.3 <- Hmsc(Y = Y, XData = XData, 
+          XFormula = ~ Amanita +
+            Cellulosimicrobium + Cenococcum +
+            Erwinia + Glaciimonas +
+            Janthinobacterium + Nevskia +
+            Rudaea +
+            Xylophilus + et + precip + max_temp + veg_class + 
+            human_mod + soil_water + soil_pH,
+          distr = "probit", studyDesign = studyDesign,
+         ranLevels = list("sample" = rL))
+
+# Set up the model, microbes AUC >= 0.70, R-squared >= 0.375
+Oo_mod_setup1.4 <- Hmsc(Y = Y, XData = XData, 
+          XFormula = ~ Amanita +
+            Cellulosimicrobium + Cenococcum +
+            Glaciimonas +
+            + et + precip + max_temp + veg_class + 
+            human_mod + soil_water + soil_pH,
+          distr = "probit", studyDesign = studyDesign,
+         ranLevels = list("sample" = rL))
+
+# Set up the model, microbes AUC >= 0.70, R-squared >= 0.39
+Oo_mod_setup1.5 <- Hmsc(Y = Y, XData = XData, 
+          XFormula = ~ Amanita + Cenococcum + Glaciimonas +
+            + et + precip + max_temp + veg_class + 
+            human_mod + soil_water + soil_pH,
+          distr = "probit", studyDesign = studyDesign,
+         ranLevels = list("sample" = rL))
+
+# Set up the model, microbes AUC >= 0.70
+Oo_mod_setup1.6 <- Hmsc(Y = Y, XData = XData, 
+          XFormula = ~ Amanita + Cellulosimicrobium +
+            Glaciimonas +
+            + et + precip + max_temp + veg_class + 
+            human_mod + soil_water + soil_pH,
+          distr = "probit", studyDesign = studyDesign,
+         ranLevels = list("sample" = rL))
+
+# Set up the model, microbes AUC >= 0.70
+Oo_mod_setup1.7 <- Hmsc(Y = Y, XData = XData, 
+          XFormula = ~ Cellulosimicrobium +
+            Amanita
+            + et + precip + max_temp + veg_class + 
+            human_mod + soil_water + soil_pH,
+          distr = "probit", studyDesign = studyDesign,
+         ranLevels = list("sample" = rL))
+
+# Set up the model without microbes
+Oo_mod_setup2 <- Hmsc(Y = Y, XData = XData, 
+          XFormula = ~ et + precip + max_temp + veg_class + 
+            human_mod + soil_water + soil_pH,
+          distr = "probit", studyDesign = studyDesign,
+         ranLevels = list("sample" = rL))
+```
+
+Run model using the env. data prediction raster stack 
+and species as trait data
+```{r, run model}
+# Run the model with microbes
+start_time <- Sys.time()
+Oo_mod_microbes <- sampleMcmc(Oo_mod_setup, 
+                     thin = thin, 
+                 samples = samples, 
+                 transient = transient,
+                 nChains = nChains, 
+                 nParallel = nChains,
+                 verbose = 1)
+end_time <- Sys.time()
+end_time - start_time #
+
+start_time <- Sys.time()
+Oo_mod_microbes1.2 <- sampleMcmc(Oo_mod_setup1.2, 
+                     thin = thin, 
+                 samples = samples, 
+                 transient = transient,
+                 nChains = nChains, 
+                 nParallel = nChains,
+                 verbose = 1)
+end_time <- Sys.time()
+end_time - start_time #
+
+start_time <- Sys.time()
+Oo_mod_microbes1.3 <- sampleMcmc(Oo_mod_setup1.3, 
+                     thin = thin, 
+                 samples = samples, 
+                 transient = transient,
+                 nChains = nChains, 
+                 nParallel = nChains,
+                 verbose = 1)
+end_time <- Sys.time()
+end_time - start_time #
+
+start_time <- Sys.time()
+Oo_mod_microbes1.4 <- sampleMcmc(Oo_mod_setup1.4, 
+                     thin = thin, 
+                 samples = samples, 
+                 transient = transient,
+                 nChains = nChains, 
+                 nParallel = nChains,
+                 verbose = 1)
+end_time <- Sys.time()
+end_time - start_time #
+
+start_time <- Sys.time()
+Oo_mod_microbes1.5 <- sampleMcmc(Oo_mod_setup1.5, 
+                     thin = thin, 
+                 samples = samples, 
+                 transient = transient,
+                 nChains = nChains, 
+                 nParallel = nChains,
+                 verbose = 1)
+end_time <- Sys.time()
+
+end_time - start_time #
+
+start_time <- Sys.time()
+Oo_mod_microbes1.6 <- sampleMcmc(Oo_mod_setup1.6, 
+                     thin = thin, 
+                 samples = samples, 
+                 transient = transient,
+                 nChains = nChains, 
+                 nParallel = nChains,
+                 verbose = 1)
+end_time <- Sys.time()
+end_time - start_time #
+
+start_time <- Sys.time()
+Oo_mod_microbes1.7 <- sampleMcmc(Oo_mod_setup1.7, 
+                     thin = thin, 
+                 samples = samples, 
+                 transient = transient,
+                 nChains = nChains, 
+                 nParallel = nChains,
+                 verbose = 1)
+end_time <- Sys.time()
+end_time - start_time #
+
+
+# Run the model without microbes
+start_time <- Sys.time()
+Oo_mod <- sampleMcmc(Oo_mod_setup2, 
+                     thin = thin, 
+                 samples = samples, 
+                 transient = transient,
+                 nChains = nChains, 
+                 nParallel = nChains,
+                 verbose = 1)
+end_time <- Sys.time()
+end_time - start_time #
+
+save(Oo_mod_microbes,file="HMSC_Oo_Microbes_22April24.Rdata")
+save(Oo_mod_microbes1.4, file = "HMSC_Oo_BestMicrobes_22April24.Rdata")
+save(Oo_mod,file="HMSC_Oo_NoMicrobes_22April24.Rdata")
+```
+
+Evaluate model using the env. data prediction raster stack and species as trait data
+```{r, Evaluate model}
+# Evaluation on training data
+m1 <- Oo_mod_microbes1.8
+mpost <- convertToCodaObject(m1)
+uni_sum <- summary(mpost$Beta)
+effectiveSize(mpost$Beta)
+gelman.diag(mpost$Beta, multivariate=FALSE)$psrf
+uni_preds <- computePredictedValues(m1)
+evaluateModelFit(hM=m1, predY=uni_preds) #No microbes RMSE 0.4045546, 
+# 0.8419355, 0.2553391
+# Microbes 0.3320122 0.9467742 0.4040949
+# Microbes1.2 0.1971679, 1, 0.6340833
+# Microbes1.3 0.2702991. 0.9983871.  0.5011883
+# 0.2715479.   0.9967742.   0.5008305
+# 0.3585951 0.9290323 0.3415449
+# 0.2495263 1 0.5398642
+# 0.3315469. 0.9677419. 0.3870965
+
+# Evaluation on training data using Cross-Validation (3-Fold)
+partition = createPartition(m1, nfolds = 3, column = "sample")
+preds = computePredictedValues(m1, partition = partition, nParallel = nChains)
+MF = evaluateModelFit(hM = m1, predY = preds)
+MF # No microbes RMSE 0.5043313, AUC 0.6193548, R2 = 0.1305535 (predictive power)
+# Microbes 0.5403743, 0.5629032, 0.08613634
+# Microbes1.2 0.5375297 0.5435484 0.06352978
+# Microbes1.3 0.534472. 0.5290323. 0.03553234
+# Microbes1.4. 0.494115 0.6258065. 0.1108918 (4 microbes)
+# Microbes1.5 0.5634582  0.5064516  0.0175144 (5 microbes)
+# 1.6 0.5262234  0.5951613  0.08617866
+# 1.7 0.5227699 0.5983871  0.08515205
+```
+
+```{r Load Models}
+load("HMSC_Oo_BestMicrobes_22April24.Rdata")
+# load("data/bact2_lit_out.Rdata")
+load("HMSC_Oo_NoMicrobes_22April24.Rdata")
+```
+
+```{r Beta plots, impact/significance of of environmental variables}
+m1 <- Oo_mod_microbes1.4
+m2 <- Oo_mod
+postBeta = getPostEstimate(m1, parName = "Beta")
+par(mar=c(5,11,2.5,0))
+
+# Plot betas looking at support level
+plotBeta(m1,
+         post = postBeta, 
+         plotTree = F,
+         spNamesNumbers = c(F,F),
+         covNamesNumbers = c(T, F)
+         )
+# Plot betas looking at mean of posterior distribution
+plotBeta(m1, 
+         post = postBeta,
+         param = "Mean",
+         plotTree = F,  
+         spNamesNumbers = c(F,F),
+         covNamesNumbers = c(T,F))
+
+postBeta = getPostEstimate(m2, parName = "Beta")
+par(mar=c(5,11,2.5,0))
+
+# Plot betas looking at support level
+plotBeta(m2,
+         post = postBeta, 
+         plotTree = F,
+         spNamesNumbers = c(F,F),
+         covNamesNumbers = c(T, F)
+         )
+# Plot betas looking at mean of posterior distribution
+plotBeta(m2, 
+         post = postBeta,
+         param = "Mean",
+         plotTree = F,  
+         spNamesNumbers = c(F,F),
+         covNamesNumbers = c(T,F))
+
+# Variance paritioning, looking at env and study design impact on Oo
+VP1 = computeVariancePartitioning(m1)
+par(mar=c(4,4,4,4))
+## look at arguments using ?barplot
+plotVariancePartitioning(m1, VP = VP1,
+                          las = 2, horiz=F)
+
+# Plotting with x-axis label removed
+plotVariancePartitioning(m1, VP = VP1,
+                         las = 2, horiz = FALSE,
+                         legend.text = NULL)
+
+VP2 = computeVariancePartitioning(m2)
+par(mar=c(4,4,4,4))
+plotVariancePartitioning(m2, VP = VP2,
+                         las = 2, horiz=F)
+
+plotVariancePartitioning(m2, VP = VP2,
+                         las = 2, horiz = FALSE,
+                         legend.text = NULL)
+```
+
+```{r Environmental response plots}
+# Create gradient
+Gradient = constructGradient(m1,
+                             focalVariable = "human_mod")
+
+predY = predict(m1,
+                XData = Gradient$XDataNew, 
+                studyDesign = Gradient$studyDesignNew,
+                ranLevels = Gradient$rLNew,
+                expected = TRUE)
+
+### plot response
+plotGradient(m1,
+             Gradient,
+             pred=predY,
+             measure="S",
+             showData = TRUE)
+
+Gradient2 = constructGradient(m2,
+                             focalVariable = "human_mod")
+
+predY = predict(m2,
+                XData = Gradient2$XDataNew, 
+                studyDesign = Gradient2$studyDesignNew,
+                ranLevels = Gradient2$rLNew,
+                expected = TRUE)
+
+### plot response
+plotGradient(m2,
+             Gradient2,
+             pred=predY,
+             measure="S",
+             showData = TRUE)
+
+
+Gradient = constructGradient(m2,
+                          focalVariable = "soil_water")
+head(Gradient$XDataNew)
+
+predY = predict(m2,
+                XData = Gradient$XDataNew, 
+                studyDesign = Gradient$studyDesignNew,
+                ranLevels = Gradient$rLNew,
+                expected = TRUE)
+### response
+plotGradient(m2,
+             Gradient,
+             pred=predY,
+             measure="S",
+             showData = TRUE)
+
+Gradient = constructGradient(m1,
+                          focalVariable = "soil_water")
+
+predY = predict(m1,
+                XData = Gradient$XDataNew, 
+                studyDesign = Gradient$studyDesignNew,
+                ranLevels = Gradient$rLNew,
+                expected = TRUE)
+### response
+plotGradient(m1,
+             Gradient,
+             pred=predY,
+             measure="S",
+             showData = TRUE)
+```
+
+```{r Create Point Grid Across State for Predictions}
+# save(full_blit_mod, file = "bact2_lit_out.Rdata")
+# save(full_flit_mod, file = "fung2_lit_out.Rdata")
+
+# Sample random points from the raster
+grid <- sampleRandom(mic_ras, size = 25000, cells = FALSE, xy = TRUE)
+grid <- as.data.frame(grid)
+
+colnames(grid) <- c("x", "y", "Acremonium", "Actinomycetospora", "Alkanindiges",
+                        "Alternaria", "Amanita", "Arthrobacter",
+                        "Cellulosimicrobium", "Cenococcum", "Cohnella",
+                        "Erwinia", "Glaciimonas", "Hyphodiscus",
+                        "Janthinobacterium", "Lasiodiplodia", "Lophiostoma",
+                        "Microdochium", "Neopestalotiopsis", "Nevskia",
+                        "Nocardioides", "Pandoraea", "Rudaea", "Serratia",
+                        "Stenotrophomonas", "Xylophilus", 
+                        "precip", "max_temp", "min_temp",
+                           "et", "veg_class", "soil_pH",
+                           "soil_water", "human_mod")
+```
+
+```{r Prediction in parallel, run on HPC, see other Rscript}
+xy.grid <- as.matrix(cbind(grid$x,grid$y))
+XData.grid <- grid[ ,c(3:ncol(grid))]
+
+# Convert the environmental and spatial predictors into a format that can be used as input for the predict function
+Gradient_m1 <- prepareGradient(m1, 
+                                 XDataNew = XData.grid, 
+                                 sDataNew = list(Route=xy.grid))
+Gradient_m2 <- prepareGradient(m2,
+                                 XDataNew = XData.grid,
+                                 sDataNew = list(Route=xy.grid))
+
+# Compute the posterior predictive distribution
+# Microbes MODEL
+start_time <- Sys.time()
+pred1 <-  predict(m1, Gradient=Gradient_m1,
+                       expected = TRUE,
+                       nParallel = 4,
+                       predictEtaMean = TRUE)
+end_time <- Sys.time()
+end_time - start_time
+
+# NO Microbes MODEL
+start_time <- Sys.time()
+pred2 <-  predict(m2, Gradient=Gradient_m2,
+                       expected = TRUE,
+                       nParallel = 4,
+                       predictEtaMean = TRUE)
+end_time <- Sys.time()
+end_time - start_time
+
+# the posterior mean prediction.
+# Get matrix of posterior mean occurrence probabilities
+# gc()
+EpredY <- Reduce("+",pred1)/length(pred1) # Reduce to mean (previously list of 4000 because of all posterior sample iterations)
+dim(EpredY)
+pred.df.blit <- as.data.frame(EpredY)
+write.csv(pred.df.blit, file = "mean_Oo_preds_TX.csv")
+
+EpredY_2 <- Reduce("+", pred2 )/length(pred2) # Reduce to mean (previously list of 4000 because of all posterior sample iterations)
+dim(EpredY_2)
+pred.df.flit <- as.data.frame(EpredY_2)
+write.csv(pred.df.flit, file = "mean_Oo_preds_TX_nomicrobes.csv")
+```
+
+```{r Data prep for maps}
+#### HPC Finished code
+# blit_data <- read.csv(file = "data/blit_data_agg_Oo.csv")[,11:37]
+# flit_data <- read.csv(file = "EnvExtracts/extracts_flit_Oo_naomit_otu_bin.csv")[,11:40]
+
+#### HPC Finished code
+# blit_data <- read.csv(file = "data/blit_data_agg_Oo.csv")[,11:37]
+# flit_data <- read.csv(file = "EnvExtracts/extracts_flit_Oo_naomit_otu_bin.csv")[,11:40]
+
+EpredY_1 <- read.csv("mean_Oo_preds_TX.csv")
+EpredY_1 <- as.data.frame(EpredY_1)
+EpredY_1 <- cbind(x = grid$x, y = grid$y, Oo = EpredY_1$x)
+EpredY_1 <- as.data.frame(EpredY_1)
+EpredY_2 <- read.csv("mean_Oo_preds_TX_nomicrobes.csv")
+EpredY_2 <- as.data.frame(EpredY_2)
+EpredY_2 <- cbind(x = grid$x, y = grid$y, Oo = EpredY_2$x)
+EpredY_2 <- as.data.frame(EpredY_2)
+# includes all the information we need to visualize the predictions as maps
+# Prob <- EpredY[,2]
+# S_blit <- rowSums(EpredY_1)
+# S_flit <- rowSums(EpredY_2)
+
+xy.grid = as.matrix(cbind(grid$x,grid$y))
+# XData.grid = grid[ ,c(3:length(grid))] # changed name of column to soil_water from residual_water to match training data
+
+# CWM <- (EpredY_blit%*%full_blit_mod$Tr)/matrix(rep(S,full_blit_mod$nt),
+```
+
+```{r}
+richness.plot <- ggplot(data = EpredY_1, aes(x=x, y=y, color=Oo)) +
+  geom_point(size=1.2) +
+    ggtitle("Ic Occurrence With Microbes") + 
+  scale_color_gradient(low="wheat", high="saddlebrown") + 
+  coord_equal() +
+  theme_void() +
+  theme(legend.text = element_text(size = 10),
+        legend.title = element_blank(),
+        plot.margin = margin(1,1,1.5,1.2, "cm"),
+        plot.title = element_text(hjust = 0.5, size = 15))
+
+ggsave(richness.plot, file = "Oo_Occurrence_Microbes_TX.jpeg", dpi = 600, width = 6 , height = 7)
+```
+
+```{r}
+richness.plot2 <- ggplot(data = EpredY_2, aes(x=x, y=y, color=Oo)) +
+  geom_point(size=1.2) +
+    ggtitle("Oo Occurrence Without Microbes") + 
+  scale_color_gradient(low="wheat", high="saddlebrown") + 
+  coord_equal() +
+  theme_void() +
+  theme(legend.text = element_text(size = 10),
+        legend.title = element_blank(),
+        plot.margin = margin(1,1,1.5,1.2, "cm"),
+        plot.title = element_text(hjust = 0.5, size = 15))
+
+ggsave(richness.plot2, file = "Oo_Occurrence_NoMicrobes_TX.jpeg", dpi = 600, width = 6 , height = 7)
+```
+
+
+
+

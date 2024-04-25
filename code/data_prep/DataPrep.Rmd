@@ -1,0 +1,772 @@
+---
+title: "Oo_SDM"
+author: "Haydt"
+date: "10/6/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Libraries
+
+```{r message=FALSE, warning=FALSE}
+library(Hmsc)
+library(dplyr)
+library(corrplot)
+library(raster)
+library(spThin)
+library(terra)
+
+library(plyr)
+# library(rgdal)
+library(sf)
+library(ggplot2)
+# library(gdalUtils)
+library(sp)
+library(parallel)
+```
+
+## Bring in the environmental raster stack into
+
+```{r}
+# Load predictor raster stack
+# Bring in here
+preds <- rast("resamp_preds_Nov23.tif")
+preds <- stack(preds)
+
+## See below for code to create this raster stack
+
+```
+
+CHELSA data Precipitation, Temp Min, Temp Max \~ 1km spatial resolution
+
+```{r message=FALSE, warning=FALSE}
+chelsa_files <- list.files(path="Layers/Global/CHELSA",
+                          pattern=".tif",
+                          full.names = T,
+                          recursive = T)
+chelsa_files <- chelsa_files[2:4]
+#  1, 14, 5, 6
+
+chelsa_stack <- stack(chelsa_files)
+names(chelsa_stack) <- c("dry_precip", "max_temp", "min_temp")
+crs(chelsa_stack)
+```
+
+Copernicus 100m resolution
+
+```{r}
+copernicus_files <- list.files(path="Layers/Global/Copernicus",
+                           pattern=".tif",
+                           full.names = T,
+                           recursive = T)
+
+ copernicus_stack <- stack(copernicus_files)
+ names(copernicus_stack) <- c("discrete_veg", "tree_cover")
+
+# stack rasters
+ veg_ras <- raster(copernicus_files[[1]]) #-55.8, 83.1
+ tree_ras <- raster(copernicus_files[[2]]) # -60, 83.6
+```
+
+NASA Anthropogenic Biomes and Human Modification
+
+```{r}
+# bring in NASA files
+nasa_files <- list.files(path="Layers/Global/NASA",
+                          pattern=".tif",
+                          full.names = T,
+                          recursive = T)
+
+# stack rasters
+# anthrome_ras <- raster(nasa_files[[2]]) #-55.8, 83.1
+human_mod_ras <- raster(nasa_files[[4]]) # -60, 83.6
+```
+
+GlobalPET Database Evapotranspiration and Aridity Index
+
+```{r}
+# bring in aridity index and evapotranspiration files
+pet_files <- list.files(path="Layers/Global/Global-AI_PET_v3/Files/Global-AI_ET0_v3_annual/TIFS",
+                          pattern=".tif",
+                          full.names = T,
+                          recursive = T)
+
+
+pet_stack <- stack(pet_files)
+names(pet_stack) <- c("aridity_index", "evapotranspiration")
+crs(pet_stack)
+```
+
+Harvard Soil Water Data
+
+```{r}
+# bring in aridity index and evapotranspiration files
+harvard_files <- list.files(path="Layers/Global/HarvardWater",
+                          pattern=".tif",
+                          full.names = T,
+                          recursive = T)
+
+
+harvard_stack <- stack(harvard_files)
+names(harvard_stack) <- c("residual_water", "saturated_water")
+crs(harvard_stack)
+```
+
+USDA Soil pH Data OpenLandMap
+
+```{r message=FALSE, warning=FALSE}
+#Soil pH in Water Data, at 0 cm
+# bring in aridity index and evapotranspiration files
+usda_files <- list.files(path="Layers/Global/OpenLandMap",
+                          pattern=".tif",
+                          full.names = T,
+                          recursive = T)
+
+
+soil_pH_ras <- raster(usda_files)
+crs(soil_pH_ras)
+```
+
+```{r}
+# Install and load required libraries
+# install.packages(c("raster", "rnaturalearth", "mapdata"))
+
+# Install and load required libraries
+# install.packages(c("raster", "sf"))
+
+library(raster)
+library(sf)
+
+# Get the lower 48 states from the 'gadm' dataset
+lower48 <- getData('GADM', country='USA', level=1)
+lower48 <- subset(lower48, !NAME_1 %in% c("Alaska", "Hawaii"))
+
+# Convert to an sf object
+lower48_sf <- st_as_sf(lower48)
+
+# Convert to a raster
+lower48_raster <- raster(ext = extent(lower48_sf), res = 0.1)
+
+# Crop all layers of interest with outline of the US (lower 48 states)
+human_mod_ras <- crop(human_mod_ras, lower48_raster)
+veg_ras <- crop(veg_ras, lower48_raster)
+harvard_stack <- crop(harvard_stack, lower48_raster)
+soil_pH_ras <- crop(soil_pH_ras, lower48_raster)
+pet_stack <- crop(pet_stack, lower48_raster)
+
+# #### Look at degrees to meters conversion for resolutions
+# # Given resolution in degrees
+# resolution_degrees <- 0.002083333
+# 
+# # Conversion factor for 1 degree at the equator
+# conversion_factor <- 111000
+# 
+# # Calculate resolution in meters
+# resolution_meters <- resolution_degrees * conversion_factor
+# 
+# # Print the result
+# cat("Resolution in meters:", resolution_meters, "\n")
+
+# Listing rasters so can loop through for resampling
+raster_list <- list(chelsa_stack, 
+               pet_stack[[2]],
+               veg_ras,
+               soil_pH_ras,
+               harvard_stack[[1]],
+               human_mod_ras)
+
+# Set the common resolution you want
+common_resolution <- 0.01 ## about equal to 1km x 1km
+
+# Create an empty raster with the desired resolution
+template_raster <- raster(extent(lower48_raster), res = common_resolution)
+
+# Resample each raster in the list to the common resolution
+resampled_rasters <- lapply(raster_list, function(r) {
+  resample(r, template_raster, method = "bilinear")  # You can choose a different resampling method if needed
+})
+
+# Stack the resampled rasters
+preds <- stack(resampled_rasters)
+
+names(preds) <- c("precip", "max_temp", "min_temp",
+                           "et", "veg_class", "soil_pH",
+                           "soil_water", "human_mod")
+
+writeRaster(preds, file = "resamp_preds_Nov23.tif")
+```
+
+## Bring in ophidiomycosis positive, negative, and associated location data
+
+```{r}
+#used the import function then turn to a data frame (vs. a tibble)
+# NH cleaned coordinates on 8 Oct 2022
+# DoD_data <- read.csv("PAdata/DoData/DoD_Coords_Final_Edited.csv")
+```
+
+#Formatting SFD/Oo Data
+
+```{r}
+# Adding column converting positive/negative results to 1s and 0s for logistic regression
+# DoD_data <- DoD_data %>%
+#               mutate(Oo = ifelse(DoD_data$Result
+#                                == "Positive", 1, 0)) %>%
+#               dplyr::select(Latitude, Longitude, Species, Oo)
+
+# DoD_data$Latitude <- as.numeric(final_data$Latitude)
+
+# p_coords  <- DoD_data %>%
+#               filter(Oo == 1) %>%
+#               dplyr::select(Longitude, Latitude)
+# a_coords <- DoD_data %>%
+#               filter(Oo == 0) %>%
+#               dplyr::select(Longitude, Latitude)
+# species <- DoD_data %>%
+#               filter(Oo == 1)
+# species <- species$Species
+# xy_data <- dplyr::select(DoD_data, -Oo)
+# xy_data$organism <- "snake"
+# xy_data <- SpatialPointsDataFrame(DoD_data[,1:2],
+#                                   DoD_data[,3:4])
+# pa_data <- dplyr::select(DoD_data, Oo)
+
+##
+
+# # Thinning data (lots of coords in clusters)
+# # library(fuzzySim)
+# library(devtools)
+# library(spThin)
+# 
+# # Check data structures and dimensions
+# dim(p_coords)
+# dim(a_coords)
+# dim(predictors[[1]])
+# plot(predictors[[3]])
+# 
+# out.dir <- "/Users/nataliehaydt/Documents/repos/fungally-snakes"
+# 
+# thin(
+# loc.data = DoD_data,
+# lat.col = "Latitude",
+# long.col = "Longitude",
+# thin.par = 1, # locations more than a km apart
+# reps = 1,
+# locs.thinned.list.return = FALSE,
+# write.files = TRUE,
+# max.files = 1,
+# out.dir,
+# out.base = "thinned_data",
+# write.log.file = TRUE,
+# log.file = "spatial_thin_log.txt",
+# verbose = TRUE
+# )
+# 
+# thinned_xy <- read.csv("thinned_data_thin1.csv")
+# # 
+# thinned_xy$xy <- paste0(thinned_xy$Longitude, thinned_xy$Latitude)
+# DoD_data$xy <- paste0(DoD_data$Longitude, DoD_data$Latitude)
+# DoD_thin <- dplyr::left_join(thinned_xy, DoD_data, by = "xy")
+# 
+# write.csv(DoD_thin, "DoD_data_thinned.csv")
+
+DoD_final <- read.csv("DoD_data_thinned.csv") ### USE THIS!!
+```
+
+# Extract raster data at sampling locations
+
+```{r}
+# Create a data frame of coordinates
+points <- DoD_final %>%
+  dplyr::select(x, y)
+
+# Look at structure
+str(points)
+
+# Transform into a spatial points dataframe
+wc.sp <- SpatialPoints(points, proj4string = 
+                         pointsCRS("+init=epsg:4326"))
+
+# Extract data at points from all layers at once
+extracts <- extract(preds, wc.sp)
+
+# rename the columns
+colnames(extracts) <- c("precip", "max_temp", "min_temp",
+                           "et", "veg_class", "soil_pH",
+                           "soil_water", "human_mod")
+
+#combine extraction values and coordinates
+sp.coords <- wc.sp@coords
+
+wc_extract <- as.data.frame(cbind(sp.coords, extracts))
+# Checking that spatial transformation didn't mess something up
+
+# save extracted data
+write.csv(wc_extract, file = "DoD_extracted_data.csv")
+extracts <- read.csv("DoD_extracted_data.csv")
+
+#renaming lat and lon back to latitude and longitude (to merge into full data frame)
+# extracts <- extracts %>% rename(latitude = y) %>%
+# rename(longitude = x)
+```
+
+#Set up for testing or running full models
+
+```{r}
+nChains = 4
+test.run = FALSE
+if (test.run){
+   #with this option, the vignette runs fast but results are not reliable 
+   thin = 1
+   samples = 10
+   transient = 5
+   verbose = 5
+} else {
+   #with this option, the vignette evaluates slow but it reproduces the results of the 
+   #.pdf version
+   thin = 3
+   samples = 1000
+   transient = 500*thin
+   verbose = 500*thin
+}
+
+# merging DoD data and extracts based on coordinates
+DoD_final$xy <- paste0(DoD_final$x, DoD_final$y)
+extracts$xy <- paste0(extracts$x, extracts$y)
+DoD_extracts <- merge(extracts, DoD_final, by = "xy")
+write.csv(DoD_extracts, file = "DoD_envExtracts.csv")
+data <- read.csv("DoD_envExtracts.csv")
+
+data <- na.omit(data)
+```
+
+Prepare data for HMSC model Using PresAbs Data
+
+```{r}
+# Formatting data
+n = 494  ## sampling units
+ns = 49  ## species
+
+XData1 <- data %>%
+        dplyr::select(et, precip, max_temp, min_temp,
+               veg_class, human_mod, soil_water, soil_pH)
+
+xycoords <- data.frame(data$x, data$y)
+xycoords <- round(xycoords, 2)
+
+Y = data.frame(x = data$Oo)
+
+# Adding studyDesign
+studyDesign = data.frame(sample = as.factor(1:n))
+
+rL = HmscRandomLevel(units = studyDesign$sample)
+```
+
+# Set up and run the null model
+
+```{r}
+# Set up the null model
+m <- Hmsc(Y = Y, XData = XData, XFormula = ~1, distr="probit", studyDesign = studyDesign)
+
+# Run the model
+m <- sampleMcmc(m, thin = thin, samples = samples, 
+                transient = transient,
+                nChains = nChains, nParallel = nChains,
+                verbose = verbose)
+
+m0 <- m
+
+save(m,file="m0_HMSC_Oo.Rdata")
+
+# Can add random effects? Don't need if only 1 sample per plot...? can look at spatial autocorrelation...
+```
+
+## EVALUATE THE NULL MODEL
+
+```{r}
+# Evaluation on training data
+mpost <- convertToCodaObject(m)
+uni_sum <- summary(mpost$Beta)
+effectiveSize(mpost$Beta) # 2653.889 
+gelman.diag(mpost$Beta, multivariate=FALSE)$psrf
+#                             Point est. Upper C.I.
+# B[(Intercept) (C1), x (S1)]  0.9998001   1.000524
+uni_preds <- computePredictedValues(m)
+evaluateModelFit(hM=m, predY=uni_preds) # RMSE 0.3484489, AUC = 0.5, TjurR2 = 0
+
+# Evaluation on training data using CV
+# Predictive Power
+partition = createPartition(m, nfolds = 3, column = "sample")
+preds = computePredictedValues(m, partition = partition, nParallel = nChains)
+MF = evaluateModelFit(hM = m, predY = preds)
+MF # RMSE 0.3502144, AUC 0.4389916, R2 = -0.004059991
+```
+
+## Add snake species as trait data
+
+```{r}
+Tr = as.data.frame(data$species)
+TrFormula = ~species
+```
+
+##JK, add snake species to environmental dataframe
+```{r}
+data$species <- as.factor(data$species)
+XData2 <- data %>%
+        dplyr::select(et, precip, max_temp, min_temp,
+               veg_class, human_mod, soil_water,
+               soil_pH, species)
+```
+
+
+Make model using the env. data prediction raster stack and species as trait data
+
+```{r}
+# Set up the model
+m1 <- Hmsc(Y = Y, XData = XData1, 
+          XFormula = ~ et + precip + 
+            max_temp + veg_class + 
+            human_mod + soil_water + soil_pH,
+          distr="probit", studyDesign = studyDesign,
+         ranLevels = list("sample" = rL))
+# TrFormula = TrFormula
+```
+
+## Run model using the env. data prediction raster stack and species as trait data
+
+```{r}
+# Run the model
+start_time <- Sys.time()
+m1 <- sampleMcmc(m1, thin = thin, 
+                 samples = samples, 
+                 transient = transient,
+                 nChains = nChains, 
+                 nParallel = nChains,
+                 verbose = 1)
+end_time <- Sys.time()
+end_time - start_time #
+
+save(m1,file="m1_HMSC_Oo_noSpecies.Rdata")
+```
+
+## Evaluate model using the env. data prediction raster stack and species as trait data
+
+```{r}
+# Evaluation on training data
+mpost <- convertToCodaObject(m1)
+uni_sum <- summary(mpost$Beta)
+effectiveSize(mpost$Beta)
+gelman.diag(mpost$Beta, multivariate=FALSE)$psrf
+uni_preds <- computePredictedValues(m1)
+evaluateModelFit(hM=m1, predY=uni_preds) # RMSE 0.2873996, AUC = 0.9064202, 0.2921214 (added in species as trait and AUC increased by 0.002, and R2 by 0.1)
+# When made species a env. trait:
+#  RMSE 0.241515, AUC 0.9556639, R2 0.4521994 !!!!!
+# Without species
+#  RMSE 0.2844283, AUC 0.9100426, R2 0.2926843 !!!!!
+
+# Evaluation on training data using Cross-Validation (3-Fold)
+partition = createPartition(m1, nfolds = 3, column = "sample")
+preds = computePredictedValues(m1, partition = partition, nParallel = nChains)
+MF = evaluateModelFit(hM = m1, predY = preds)
+MF # RMSE 0.3003568, AUC 0.8776134, R2 = 0.2571219 (predictive power)
+# adding snake species as trait, AUC up 0.1 and R2 up 0.1
+# with species and env. trait:
+# RMSE 0.2871769, 0.8901176, 0.347968
+## No snake species
+# RMSE 0.3006686, AUC 0.8800341, R2 0.2545086
+```
+
+## Look at convergence
+
+```{r}
+## Load the model
+# m0 <- load("m0_HMSC_Oo.Rdata")
+# Choose one to load
+# load("m1_HMSC_Oo.Rdata")
+# load("m1_HMSC_Oo_speciesAsEnv.Rdata")
+load("~/Documents/repos/fungally-snakes/m1_HMSC_Oo_noSpecies.Rdata")
+## Convergence tests
+mcoda0 <- convertToCodaObject(m0)
+mcoda1 <- convertToCodaObject(m1)
+mcoda2 <- convertToCodaObject(m2)
+par(mar = rep(2, 4))
+#Visual chain tests for different coefficients of interest 
+plot(mcoda0$Beta)
+plot(mcoda1$Beta)
+plot(mcoda2$Beta)
+dev.off
+# 
+plot(mcoda2$Gamma[ ,1:3])
+plot(mcoda2$Gamma[ ,4:6])
+plot(mcoda2$Gamma[ ,7:8])
+
+# Gelman's diagnosis, which should be at most close to 1.0 for good convergence.
+
+gelman.diag(mcoda1$Beta) ## All close to 1
+```
+
+## Look at impact of environment on Oo (beta)
+
+```{r}
+postBeta = getPostEstimate(m1, parName = "Beta")
+par(mar=c(5,11,2.5,0))
+
+# Plot betas looking at support level
+plotBeta(m1,
+         post = postBeta, 
+         plotTree = F,
+         spNamesNumbers = c(F,F),
+         covNamesNumbers = c(T, F)
+         )
+# Plot betas looking at mean of posterior distribution
+plotBeta(m1, 
+         post = postBeta,
+         param = "Mean",
+         plotTree = F,  
+         spNamesNumbers = c(F,F),
+         covNamesNumbers = c(T,F))
+```
+
+## Look at how snake species impacts Oo's response to environment (gamma)
+```{r message=FALSE, warning=FALSE}
+postGamma = getPostEstimate(m1, parName = "Gamma")
+# plotGamma(m1, post = postGamma, param = "Support")
+postGamma$mean
+# without species as env. traits...
+#               [,1]
+# [1,] -2.9283206754
+# [2,] -0.0024797446
+# [3,] -0.0128188343
+# [4,]  0.3038520789
+# [5,] -0.0007263941
+# [6,]  0.6080047714
+# [7,] 19.4978565115
+# [8,] -0.0865986946
+postGamma$support
+# without species as env. traits...
+#        [,1]
+# [1,] 0.35225
+# [2,] 0.11625
+# [3,] 0.22900
+# [4,] 0.90500
+# [5,] 0.48350
+# [6,] 0.61375
+# [7,] 0.74975
+# [8,] 0.07150
+postGamma$supportNeg
+# without species as env. traits...
+#         [,1]
+# [1,] 0.64775
+# [2,] 0.88375
+# [3,] 0.77100
+# [4,] 0.09500
+# [5,] 0.51650
+# [6,] 0.38625
+# [7,] 0.25025
+# [8,] 0.92850
+```
+
+## Variance paritioning, looking at env and study design impact on Oo
+
+```{r}
+VP = computeVariancePartitioning(m1)
+par(mar=c(4,4,4,4))
+plotVariancePartitioning(m1, VP = VP,
+                         las = 2, horiz=F)
+```
+
+
+## Look at how predictors vary by env. gradients
+
+```{r}
+Gradient = constructGradient(m2,
+                             focalVariable = "precip")
+head(Gradient$XDataNew)
+
+predY = predict(m2,
+                XData = Gradient$XDataNew, 
+                studyDesign = Gradient$studyDesignNew,
+                ranLevels = Gradient$rLNew,
+                expected = TRUE)
+### Species richness
+plotGradient(m2,
+             Gradient,
+             pred=predY,
+             measure="S",
+             showData = TRUE)
+
+Gradient = constructGradient(m2,
+                             focalVariable = "et")
+head(Gradient$XDataNew)
+
+predY = predict(m2,
+                XData = Gradient$XDataNew, 
+                studyDesign = Gradient$studyDesignNew,
+                ranLevels = Gradient$rLNew,
+                expected = TRUE)
+### Species richness
+plotGradient(m2,
+             Gradient,
+             pred=predY,
+             measure="S",
+             showData = TRUE)
+
+Gradient = constructGradient(m2,
+                          focalVariable = "max_temp")
+head(Gradient$XDataNew)
+
+predY = predict(m2,
+                XData = Gradient$XDataNew, 
+                studyDesign = Gradient$studyDesignNew,
+                ranLevels = Gradient$rLNew,
+                expected = TRUE)
+### Species richness
+plotGradient(m2,
+             Gradient,
+             pred=predY,
+             measure="S",
+             showData = TRUE)
+
+Gradient = constructGradient(m2,
+                          focalVariable = "human_mod")
+head(Gradient$XDataNew)
+
+predY = predict(m2,
+                XData = Gradient$XDataNew, 
+                studyDesign = Gradient$studyDesignNew,
+                ranLevels = Gradient$rLNew,
+                expected = TRUE)
+### Species richness
+plotGradient(m2,
+             Gradient,
+             pred=predY,
+             measure="S",
+             showData = TRUE)
+
+Gradient = constructGradient(m2,
+                          focalVariable = "soil_water")
+head(Gradient$XDataNew)
+
+predY = predict(m2,
+                XData = Gradient$XDataNew, 
+                studyDesign = Gradient$studyDesignNew,
+                ranLevels = Gradient$rLNew,
+                expected = TRUE)
+### Species richness
+plotGradient(m2,
+             Gradient,
+             pred=predY,
+             measure="S",
+             showData = TRUE)
+
+Gradient = constructGradient(m2,
+                          focalVariable = "soil_pH")
+head(Gradient$XDataNew)
+
+predY = predict(m2,
+                XData = Gradient$XDataNew, 
+                studyDesign = Gradient$studyDesignNew,
+                ranLevels = Gradient$rLNew,
+                expected = TRUE)
+### Species richness
+plotGradient(m2,
+             Gradient,
+             pred=predY,
+             measure="S",
+             showData = TRUE)
+```
+
+### USING M1 - Not with species so we can predict via the raster layers
+```{r}
+
+# Crop all raster to AR first!
+# Bring in AR raster to use as a mask to crop all predictor layers
+AR <- readOGR("Layers/AR/AR_shapefile_wetlands/Arkansas.shp")
+
+AR <- spTransform(AR, crs(preds))
+
+## CROP PREDICTOR RASTER
+predictors <- crop(preds, AR)
+predictors <- raster(predictors)
+## Make a grid of points to predict Oo occurrences in AR
+# grid_25000 <- sampleRandom(predictors, 25000,
+#                            cells = FALSE, xy=TRUE)
+## already did previously, so bringing in coords below
+
+## Bring in grid points
+grid <- read.csv("data/grid_25000_random.csv", stringsAsFactors=TRUE)
+# head(grid)
+# grid <- as.data.frame(grid_50000)
+# write.csv(grid, file = "data/grid_50000_random.csv")
+# grid <- read.csv("data/grid_50000_random.csv")
+xy.grid = as.matrix(cbind(grid$x,grid$y))
+XData.grid = grid[ ,c(3:length(grid))] # changed name of column to soil_water from residual_water to match training data
+
+# We next use the prepareGradient function to convert the environmental and spatial
+# predictors into a format that can be used as input for the predict function
+Gradient = prepareGradient(m1, XDataNew = XData.grid, sDataNew = list(Route=xy.grid))
+```
+
+### Prediction
+## Runs in parallel
+```{r}
+# We are now ready to compute the posterior predictive distribution (takes a minute to compute it)
+nParallel=3
+start_time <- Sys.time()
+predY = predict(m1, Gradient=Gradient, expected = TRUE,
+                nParallel=nParallel,
+                predictEtaMean = TRUE)
+end_time <- Sys.time()
+end_time - start_time
+```
+
+```{r}
+# We may simply by ignoring parameter uncertainty and just looking at 
+# the posterior mean prediction.
+# Get matrix of posterior mean occurrence probabilities
+# gc()
+EpredY <- Reduce("+",predY)/length(predY) # Reduce to mean (previously list of 4000 because of all posterior sample iterations)
+dim(EpredY)
+pred.df <- as.data.frame(EpredY)
+write.csv(pred.df, file = "mean_Oopreds_25000.csv")
+
+EpredY <- read.csv("mean_Oopreds_25000.csv") ## changed name..
+EpredY <- as.matrix(EpredY)
+
+# includes all the information we need to visualize the predictions as maps
+# Prob <- EpredY[,2]
+S <- rowSums(EpredY)
+CWM <- (EpredY%*%m1$Tr)/matrix(rep(S,m1$nt),ncol=m1$nt)
+xy <- grid[,1:2]
+LT <- XData.grid$latitude
+RW <- XData.grid$soil_water
+ET <- XData.grid$et
+PR <- XData.grid$precip
+MT <- XData.grid$max_temp
+VG <- XData.grid$veg_class
+HM <- XData.grid$human_mod
+PH <- XData.grid$soil_pH
+
+mapData=data.frame(xy,LT,RW,ET,PR,MT,VG,HM,PH,S,EpredY,CWM, stringsAsFactors=TRUE)
+```
+
+## Plot Predictions
+```{r}
+# Map prediction for Oo
+Oo <- ggplot(data = mapData, aes(x=x, y=y, color=S)) +
+  geom_point(size=2.6) + 
+  ggtitle(expression(italic("Oo Prediction for AR "))) + 
+  scale_color_gradient(low="wheat", high="saddlebrown") + # burlywood", high="saddlebrown", low="bisque", high="salmon4"
+  coord_equal() +
+  theme_void() +
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size = 10),
+        plot.margin = margin(1,1,1.5,1.2, "cm"),
+        plot.title = element_text(hjust = 0.5, size = 20))
+```
+
+
+
+In the future, will rerun these models to predict occurrences of microbes associated with Onygenales fungi and skin infections in snakes. I will look at both traits of microbes and their relatedness (include a phylogenetic matrix) to examine these results. I will also examine the co-occurrence probabilities between microbes.
